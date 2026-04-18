@@ -7,47 +7,52 @@
 -- Program Name:        Pixel Noise
 -- Author:              Theron Humiston
 -- Overview:
---   Pixel noise synthesis program with independent horizontal and vertical
---   coherence, density, speed, and color controls. Combines features from
---   horiz_pixel_noise, horiz_color_noise, and horiz_palette_noise GLSL
+--   Pixel noise synthesis program with coherence, density, speed, color, and
+--   rotation controls. Combines features from horiz_pixel_noise,
+--   horiz_color_noise, horiz_palette_noise, and horiz_triangle_noise GLSL
 --   shaders (the83/shaderz).
 --
 --   Modes:
 --     Grayscale (color off): Single-channel noise with two-layer mixing.
---     Color Mix (color on, priority off): 3 independent noise channels as
---       R/G/B with additive mixing, converted to YUV. VHS-style chromatic
---       interference. Color knob controls channel spatial decorrelation.
+--     Color Mix (color on, priority off): 3 noise channels with additive
+--       palette color compositing in YUV.
 --     Color Priority (color on, priority on): 3 noise layers with priority
---       compositing (no mixing). Highest-priority active layer wins and
---       outputs its palette color. Color knob selects from 16 palettes.
+--       compositing. Highest active layer wins.
+--     Triangle (triangle on): Each of the 3 noise layers samples through
+--       a rotated coordinate grid (base, +60, -60 degrees), creating
+--       triangular intersection patterns. Angle knob sets base rotation.
 --
 --   This is a synthesis program — input video is ignored.
 --
 -- Resources:
---   0 BRAM, ~2400 LUTs (estimated)
+--   0 BRAM, ~3800 LUTs (estimated with triangle mode)
 --
 -- Pipeline:
---   Stage 0 (cell computation):                 1 clock  -> T+1
---   Stage 1 (hash computation, 6 hashes):       1 clock  -> T+2
---   Stage 2 (two-layer mix / passthrough):      1 clock  -> T+3
---   Stage 3 (temporal blend x3):                1 clock  -> T+4
---   Stage 4 (threshold + density x3):           1 clock  -> T+5
---   Stage 5 (compositing + palette lookup):     1 clock  -> T+6
---   Stage 6 (output register):                  1 clock  -> T+7
---   Total: 7 clocks
+--   Stage 0a (rotation multiply / passthrough):  1 clock  -> T+1
+--   Stage 0b (combine + cell index extract):     1 clock  -> T+2
+--   Stage 1  (hash computation, 6 hashes):       1 clock  -> T+3
+--   Stage 2  (two-layer mix / passthrough):      1 clock  -> T+4
+--   Stage 3  (temporal blend x3):                1 clock  -> T+5
+--   Stage 4  (threshold + density x3):           1 clock  -> T+6
+--   Stage 5  (compositing + palette lookup):     1 clock  -> T+7
+--   Stage 6  (output register):                  1 clock  -> T+8
+--   Total: 8 clocks
 --
 -- Submodules:
 --   video_timing_generator: sync edge detection
 --   frame_phase_accumulator: animation phase DDS
+--   sin_cos_full_lut_10x10 x3: angle -> sin/cos for coordinate rotation
 --
 -- Parameters:
---   Pot 1  (registers_in(0)):    H Coherence (cell width)
---   Pot 2  (registers_in(1)):    V Coherence (cell height)
+--   Pot 1  (registers_in(0)):    H Coherence / Cell Size (triangle)
+--   Pot 2  (registers_in(1)):    V Coherence (unused in triangle mode)
 --   Pot 3  (registers_in(2)):    Density
 --   Pot 4  (registers_in(3)):    Speed (animation rate)
---   Pot 5  (registers_in(4)):    Color/Palette (channel separation or palette)
+--   Pot 5  (registers_in(4)):    Color/Palette
+--   Pot 6  (registers_in(5)):    Angle (triangle mode base rotation)
 --   Tog 7  (registers_in(6)(0)): Color enable (Off=grayscale, On=color)
 --   Tog 8  (registers_in(6)(1)): Compositing (Mix / Priority)
+--   Tog 9  (registers_in(6)(2)): Triangle mode (Off / On)
 
 --------------------------------------------------------------------------------
 
@@ -63,10 +68,11 @@ use work.video_timing_pkg.all;
 
 architecture pixel_noise of program_top is
 
-    constant C_SYNC_DELAY_CLKS : integer := 7;
+    constant C_SYNC_DELAY_CLKS : integer := 8;
 
-    -- Channel array type (3 channels: R/G/B or layers 0/1/2)
+    -- Channel array type (3 channels)
     type t_ch_array is array(0 to 2) of unsigned(9 downto 0);
+    type t_cell_array is array(0 to 2) of unsigned(11 downto 0);
 
     -- Video timing
     signal s_timing : t_video_timing_port;
@@ -86,25 +92,46 @@ architecture pixel_noise of program_top is
     signal r_boost_en     : std_logic             := '0';
     signal r_color_en     : std_logic             := '0';
     signal r_priority_en  : std_logic             := '0';
+    signal r_triangle_en  : std_logic             := '0';
     signal r_ch_offset    : unsigned(5 downto 0)  := (others => '0');
     signal r_palette_idx  : unsigned(3 downto 0)  := (others => '0');
+    signal r_cell_shift   : natural range 0 to 10 := 0;
     signal s_prev_vsync   : std_logic             := '1';
 
-    -- Cell tracking counters
+    -- Triangle mode: sin/cos for base angle
+    signal s_sincos_angle : std_logic_vector(9 downto 0) := (others => '0');
+    signal s_sincos_sin   : signed(9 downto 0);
+    signal s_sincos_cos   : signed(9 downto 0);
+    -- Latched sin/cos for base angle (computed on vsync)
+    signal r_sin_base : signed(9 downto 0) := (others => '0');
+    signal r_cos_base : signed(9 downto 0) := (others => '0');
+    signal r_sincos_done : std_logic := '0';
+
+    -- Cell tracking counters (normal mode)
     signal s_h_cell_px  : unsigned(11 downto 0) := (others => '0');
     signal s_v_cell_px  : unsigned(11 downto 0) := (others => '0');
     signal s_h_cell     : unsigned(11 downto 0) := (others => '0');
     signal s_v_cell     : unsigned(11 downto 0) := (others => '0');
     signal s_prev_hsync : std_logic             := '1';
 
-    -- Stage 0: registered cell indices
-    signal s0_h_cell : unsigned(11 downto 0) := (others => '0');
-    signal s0_v_cell : unsigned(11 downto 0) := (others => '0');
+    -- Stage 0a: rotation multiply products (triangle) or pass-through
+    -- Single rotation (base angle only), 4 products: h*cos, h*sin, v*cos, v*sin
+    -- Channels 1 and 2 derive offset cell indices from the same rotation
+    signal s0a_hcos : signed(17 downto 0) := (others => '0');
+    signal s0a_hsin : signed(17 downto 0) := (others => '0');
+    signal s0a_vcos : signed(17 downto 0) := (others => '0');
+    signal s0a_vsin : signed(17 downto 0) := (others => '0');
+    -- Normal mode: just register the counter cells
+    signal s0a_h_cell : unsigned(11 downto 0) := (others => '0');
+    signal s0a_v_cell : unsigned(11 downto 0) := (others => '0');
 
-    -- Stage 1: 6 hash outputs (3 channels x 2 frames)
-    signal s1_ch_n  : t_ch_array := (others => (others => '0'));  -- frame N
-    signal s1_ch_n1 : t_ch_array := (others => (others => '0'));  -- frame N+1
-    -- Extra layer B for grayscale two-layer mix
+    -- Stage 0b: per-channel cell indices
+    signal s0b_h_cells : t_cell_array := (others => (others => '0'));
+    signal s0b_v_cells : t_cell_array := (others => (others => '0'));
+
+    -- Stage 1: hash outputs (3 channels x 2 frames)
+    signal s1_ch_n  : t_ch_array := (others => (others => '0'));
+    signal s1_ch_n1 : t_ch_array := (others => (others => '0'));
     signal s1_b_n   : unsigned(9 downto 0) := (others => '0');
     signal s1_b_n1  : unsigned(9 downto 0) := (others => '0');
 
@@ -118,7 +145,7 @@ architecture pixel_noise of program_top is
     -- Stage 4: after threshold/density
     signal s4_ch : t_ch_array := (others => (others => '0'));
 
-    -- Stage 5: compositing output (YUV directly, no RGB conversion needed)
+    -- Stage 5: compositing output
     signal s5_y : unsigned(9 downto 0) := (others => '0');
     signal s5_u : unsigned(9 downto 0) := to_unsigned(512, 10);
     signal s5_v : unsigned(9 downto 0) := to_unsigned(512, 10);
@@ -128,16 +155,18 @@ architecture pixel_noise of program_top is
     signal s6_u : unsigned(9 downto 0) := to_unsigned(512, 10);
     signal s6_v : unsigned(9 downto 0) := to_unsigned(512, 10);
 
-    -- Hash salts (10-bit constants)
-    constant C_SALT_A : unsigned(9 downto 0) := "1010010110";  -- 0x296
-    constant C_SALT_B : unsigned(9 downto 0) := "0111110001";  -- 0x1F1
-    constant C_SALT_C : unsigned(9 downto 0) := "1100011010";  -- 0x31A
-    constant C_SALT_D : unsigned(9 downto 0) := "0011101001";  -- 0x0E9
+    -- Hash salts
+    constant C_SALT_A : unsigned(9 downto 0) := "1010010110";
+    constant C_SALT_B : unsigned(9 downto 0) := "0111110001";
+    constant C_SALT_C : unsigned(9 downto 0) := "1100011010";
+    constant C_SALT_D : unsigned(9 downto 0) := "0011101001";
 
-    -- Channel frame offsets (matching shader's time offsets)
-    constant C_FRAME_OFF_0 : unsigned(9 downto 0) := to_unsigned(0, 10);
+    -- Channel frame offsets
     constant C_FRAME_OFF_1 : unsigned(9 downto 0) := to_unsigned(31, 10);
     constant C_FRAME_OFF_2 : unsigned(9 downto 0) := to_unsigned(67, 10);
+
+    -- 60 degrees in 10-bit angle space: 1024 * 60/360 = 171
+    constant C_ANGLE_60 : unsigned(9 downto 0) := to_unsigned(171, 10);
 
     -- =========================================================================
     -- Hash function
@@ -166,6 +195,19 @@ architecture pixel_noise of program_top is
     end function;
 
     -- =========================================================================
+    -- Extract cell index from rotated coordinate via barrel shift
+    -- =========================================================================
+    function extract_cell(coord : signed(17 downto 0);
+                          shift : natural range 0 to 10) return unsigned is
+        variable v_shifted : signed(17 downto 0);
+    begin
+        -- Shift right by 7 (undo 8-bit sin/cos scaling) + cell_shift
+        -- Use arithmetic shift right, then take low 12 bits
+        v_shifted := shift_right(coord, 7 + shift);
+        return unsigned(v_shifted(11 downto 0));
+    end function;
+
+    -- =========================================================================
     -- Palette lookup (16 palettes x 3 colors, pre-converted to YUV)
     -- =========================================================================
     type t_yuv_color is record
@@ -178,19 +220,17 @@ architecture pixel_noise of program_top is
                             color_idx : natural range 0 to 2) return t_yuv_color is
         variable c : t_yuv_color;
     begin
-        -- Default
         c.y := (others => '0');
         c.u := to_unsigned(512, 10);
         c.v := to_unsigned(512, 10);
-
         case to_integer(pal_idx) is
-            when 0 => -- Gray (knob full left = grayscale)
+            when 0 => -- Gray
                 case color_idx is
                     when 0 => c := (y => to_unsigned(1023, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                     when 1 => c := (y => to_unsigned(583, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                     when 2 => c := (y => to_unsigned(297, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                 end case;
-            when 1 => -- RGB Primary
+            when 1 => -- RGB
                 case color_idx is
                     when 0 => c := (y => to_unsigned(306, 10), u => to_unsigned(339, 10), v => to_unsigned(1023, 10));
                     when 1 => c := (y => to_unsigned(601, 10), u => to_unsigned(173, 10), v => to_unsigned(83, 10));
@@ -202,13 +242,13 @@ architecture pixel_noise of program_top is
                     when 1 => c := (y => to_unsigned(422, 10), u => to_unsigned(851, 10), v => to_unsigned(941, 10));
                     when 2 => c := (y => to_unsigned(906, 10), u => to_unsigned(0, 10), v => to_unsigned(595, 10));
                 end case;
-            when 3 => -- Warm Orange
+            when 3 => -- Warm
                 case color_idx is
                     when 0 => c := (y => to_unsigned(756, 10), u => to_unsigned(85, 10), v => to_unsigned(702, 10));
                     when 1 => c := (y => to_unsigned(456, 10), u => to_unsigned(254, 10), v => to_unsigned(916, 10));
                     when 2 => c := (y => to_unsigned(174, 10), u => to_unsigned(413, 10), v => to_unsigned(804, 10));
                 end case;
-            when 4 => -- Cool Blue
+            when 4 => -- Cool
                 case color_idx is
                     when 0 => c := (y => to_unsigned(675, 10), u => to_unsigned(709, 10), v => to_unsigned(345, 10));
                     when 1 => c := (y => to_unsigned(291, 10), u => to_unsigned(925, 10), v => to_unsigned(305, 10));
@@ -285,7 +325,7 @@ architecture pixel_noise of program_top is
     end function;
 
     -- =========================================================================
-    -- Threshold helper (shared across channels)
+    -- Threshold helper
     -- =========================================================================
     function apply_threshold(noise     : unsigned(9 downto 0);
                              threshold : unsigned(9 downto 0);
@@ -369,30 +409,58 @@ begin
         );
 
     -- =========================================================================
+    -- Sin/Cos LUT (single instance, time-multiplexed for 3 angles)
+    -- =========================================================================
+    u_sincos : entity work.sin_cos_full_lut_10x10
+        port map(angle_in => s_sincos_angle, sin_out => s_sincos_sin, cos_out => s_sincos_cos);
+
+    -- Latch sin/cos for base angle on vsync (LUT is combinational,
+    -- result is valid 1 clock after angle register updates)
+    s_sincos_angle <= registers_in(5)(9 downto 0);
+
+    p_sincos_latch : process(clk)
+    begin
+        if rising_edge(clk) then
+            if s_prev_vsync = '1' and data_in.vsync_n = '0' then
+                r_sin_base <= s_sincos_sin;
+                r_cos_base <= s_sincos_cos;
+            end if;
+        end if;
+    end process p_sincos_latch;
+
+    -- =========================================================================
     -- Parameter latch on vsync
     -- =========================================================================
     p_param_latch : process(clk)
-        variable v_density    : unsigned(9 downto 0);
-        variable v_h_knob     : unsigned(9 downto 0);
-        variable v_v_knob     : unsigned(9 downto 0);
-        variable v_h_sq       : unsigned(19 downto 0);
-        variable v_v_sq       : unsigned(19 downto 0);
+        variable v_density  : unsigned(9 downto 0);
+        variable v_h_knob   : unsigned(9 downto 0);
+        variable v_v_knob   : unsigned(9 downto 0);
+        variable v_h_sq     : unsigned(19 downto 0);
+        variable v_v_sq     : unsigned(19 downto 0);
+        variable v_shift    : natural;
     begin
         if rising_edge(clk) then
             s_prev_vsync <= data_in.vsync_n;
             if s_prev_vsync = '1' and data_in.vsync_n = '0' then
-                -- H coherence: quadratic curve
+                -- H coherence: quadratic curve for cell width
                 v_h_knob := unsigned(registers_in(0)(9 downto 0));
                 v_h_sq := v_h_knob * v_h_knob;
                 r_h_cell_width <= to_unsigned(1, 12) + resize(v_h_sq(19 downto 10), 12);
 
-                -- V coherence: same
+                -- V coherence: same (unused in triangle mode)
                 v_v_knob := unsigned(registers_in(1)(9 downto 0));
                 v_v_sq := v_v_knob * v_v_knob;
                 r_v_cell_width <= to_unsigned(1, 12) + resize(v_v_sq(19 downto 10), 12);
 
+                -- Triangle mode: cell shift from H coherence top 4 bits
+                v_shift := to_integer(unsigned(registers_in(0)(9 downto 6)));
+                if v_shift > 10 then
+                    r_cell_shift <= 10;
+                else
+                    r_cell_shift <= v_shift;
+                end if;
+
                 -- Density -> threshold
-                -- Maps density 0->960 (~6% passes), 960+->0 (all passes)
                 v_density := unsigned(registers_in(2)(9 downto 0));
                 if v_density >= 960 then
                     r_threshold <= to_unsigned(0, 10);
@@ -400,7 +468,7 @@ begin
                     r_threshold <= to_unsigned(960, 10) - resize(v_density, 10);
                 end if;
 
-                -- Softness (wider at high density for smoother fill)
+                -- Softness
                 if v_density < 240 then
                     r_softness <= 3;
                 elsif v_density < 480 then
@@ -411,7 +479,7 @@ begin
                     r_softness <= 0;
                 end if;
 
-                -- Boost for sparse noise
+                -- Boost
                 if v_density < 320 then
                     r_boost_en <= '1';
                 else
@@ -421,16 +489,19 @@ begin
                 -- Color controls
                 r_color_en    <= registers_in(6)(0);
                 r_priority_en <= registers_in(6)(1);
+                r_triangle_en <= registers_in(6)(2);
 
-                -- Knob 5: channel offset (mix mode) or palette index (priority)
+                -- Knob 5: channel offset / palette index
                 r_ch_offset   <= unsigned(registers_in(4)(9 downto 4));
                 r_palette_idx <= unsigned(registers_in(4)(9 downto 6));
+
+                -- Knob 6 (angle) is read by p_sincos_mux on vsync
             end if;
         end if;
     end process p_param_latch;
 
     -- =========================================================================
-    -- Cell tracking counters
+    -- Cell tracking counters (normal mode only)
     -- =========================================================================
     p_cell_track : process(clk)
     begin
@@ -464,96 +535,126 @@ begin
     end process p_cell_track;
 
     -- =========================================================================
-    -- Stage 0 (T+1): Register cell indices
+    -- Stage 0a (T+1): Rotation multiply (triangle) or register counters
     -- =========================================================================
-    p_stage0 : process(clk)
+    p_stage0a : process(clk)
     begin
         if rising_edge(clk) then
-            s0_h_cell <= s_h_cell;
-            s0_v_cell <= s_v_cell;
+            if r_triangle_en = '1' then
+                -- Single rotation at base angle (channel 0): 4 products only
+                -- 10-bit coords × 8-bit sin/cos = 18-bit products
+                s0a_hcos <= signed(resize(s_hcount(11 downto 2), 10)) * r_cos_base(9 downto 2);
+                s0a_hsin <= signed(resize(s_hcount(11 downto 2), 10)) * r_sin_base(9 downto 2);
+                s0a_vcos <= signed(resize(s_vcount(11 downto 2), 10)) * r_cos_base(9 downto 2);
+                s0a_vsin <= signed(resize(s_vcount(11 downto 2), 10)) * r_sin_base(9 downto 2);
+            else
+                s0a_h_cell <= s_h_cell;
+                s0a_v_cell <= s_v_cell;
+            end if;
         end if;
-    end process p_stage0;
+    end process p_stage0a;
 
     -- =========================================================================
-    -- Stage 1 (T+2): Hash computation — 6 hashes for 3 channels
-    --   Color mode: 3 channels with different salts and frame offsets
-    --   Grayscale:  ch0 = layer A, ch1 = layer B (for two-layer mix)
+    -- Stage 0b (T+2): Combine rotated coords + extract cell index, or pass
+    -- =========================================================================
+    p_stage0b : process(clk)
+        variable v_rx : signed(17 downto 0);
+        variable v_ry : signed(17 downto 0);
+    begin
+        if rising_edge(clk) then
+            if r_triangle_en = '1' then
+                -- Channel 0: rotated at base angle
+                v_rx := s0a_hcos - s0a_vsin;
+                v_ry := s0a_hsin + s0a_vcos;
+                s0b_h_cells(0) <= extract_cell(v_rx, r_cell_shift);
+                s0b_v_cells(0) <= extract_cell(v_ry, r_cell_shift);
+                -- Channels 1 and 2: swap/negate components to approximate
+                -- +60 and -60 degree offsets from the base rotation.
+                -- This creates 3 differently-oriented grids without extra multiplies.
+                -- Ch1: ~rotate +60 by mixing rx/ry: x' = -rx/2 + ry*7/8, y' = -rx*7/8 - ry/2
+                s0b_h_cells(1) <= extract_cell(-shift_right(v_rx, 1) + v_ry - shift_right(v_ry, 3), r_cell_shift);
+                s0b_v_cells(1) <= extract_cell(-v_rx + shift_right(v_rx, 3) - shift_right(v_ry, 1), r_cell_shift);
+                -- Ch2: ~rotate -60: x' = -rx/2 - ry*7/8, y' = rx*7/8 - ry/2
+                s0b_h_cells(2) <= extract_cell(-shift_right(v_rx, 1) - v_ry + shift_right(v_ry, 3), r_cell_shift);
+                s0b_v_cells(2) <= extract_cell(v_rx - shift_right(v_rx, 3) - shift_right(v_ry, 1), r_cell_shift);
+            else
+                -- Normal mode: shared cell from counter, with per-channel offsets
+                s0b_h_cells(0) <= s0a_h_cell;
+                s0b_v_cells(0) <= s0a_v_cell;
+                s0b_h_cells(1) <= s0a_h_cell + resize(r_ch_offset, 12);
+                s0b_v_cells(1) <= s0a_v_cell;
+                s0b_h_cells(2) <= s0a_h_cell - resize(r_ch_offset, 12);
+                s0b_v_cells(2) <= s0a_v_cell;
+            end if;
+        end if;
+    end process p_stage0b;
+
+    -- =========================================================================
+    -- Stage 1 (T+3): Hash computation — per-channel cell indices
     -- =========================================================================
     p_stage1 : process(clk)
         variable v_frame_n  : unsigned(9 downto 0);
         variable v_frame_n1 : unsigned(9 downto 0);
-        variable v_hcell_1  : unsigned(11 downto 0);
-        variable v_hcell_2  : unsigned(11 downto 0);
     begin
         if rising_edge(clk) then
             v_frame_n  := s_phase(19 downto 10);
             v_frame_n1 := s_phase(19 downto 10) + 1;
 
-            -- Channel 0 (always uses base cell position, salt A)
-            s1_ch_n(0)  <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n, C_SALT_A);
-            s1_ch_n1(0) <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n1, C_SALT_A);
+            -- Channel 0
+            s1_ch_n(0)  <= cell_hash(s0b_h_cells(0), s0b_v_cells(0), v_frame_n, C_SALT_A);
+            s1_ch_n1(0) <= cell_hash(s0b_h_cells(0), s0b_v_cells(0), v_frame_n1, C_SALT_A);
 
-            if r_color_en = '1' then
-                -- Color mode: ch1 and ch2 with spatial offset and frame offset
-                v_hcell_1 := s0_h_cell + resize(r_ch_offset, 12);
-                v_hcell_2 := s0_h_cell - resize(r_ch_offset, 12);
-
-                s1_ch_n(1)  <= cell_hash(v_hcell_1, s0_v_cell, v_frame_n + C_FRAME_OFF_1, C_SALT_C);
-                s1_ch_n1(1) <= cell_hash(v_hcell_1, s0_v_cell, v_frame_n1 + C_FRAME_OFF_1, C_SALT_C);
-                s1_ch_n(2)  <= cell_hash(v_hcell_2, s0_v_cell, v_frame_n + C_FRAME_OFF_2, C_SALT_D);
-                s1_ch_n1(2) <= cell_hash(v_hcell_2, s0_v_cell, v_frame_n1 + C_FRAME_OFF_2, C_SALT_D);
-
+            if r_color_en = '1' or r_triangle_en = '1' then
+                -- Color/triangle mode: 3 independent channels
+                s1_ch_n(1)  <= cell_hash(s0b_h_cells(1), s0b_v_cells(1),
+                                         v_frame_n + C_FRAME_OFF_1, C_SALT_C);
+                s1_ch_n1(1) <= cell_hash(s0b_h_cells(1), s0b_v_cells(1),
+                                         v_frame_n1 + C_FRAME_OFF_1, C_SALT_C);
+                s1_ch_n(2)  <= cell_hash(s0b_h_cells(2), s0b_v_cells(2),
+                                         v_frame_n + C_FRAME_OFF_2, C_SALT_D);
+                s1_ch_n1(2) <= cell_hash(s0b_h_cells(2), s0b_v_cells(2),
+                                         v_frame_n1 + C_FRAME_OFF_2, C_SALT_D);
                 s1_b_n  <= (others => '0');
                 s1_b_n1 <= (others => '0');
             else
-                -- Grayscale mode: ch1 = layer B (for two-layer mix), ch2 unused
+                -- Grayscale: layer B for two-layer mix
                 s1_ch_n(1)  <= (others => '0');
                 s1_ch_n1(1) <= (others => '0');
                 s1_ch_n(2)  <= (others => '0');
                 s1_ch_n1(2) <= (others => '0');
-
-                s1_b_n  <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n, C_SALT_B);
-                s1_b_n1 <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n1, C_SALT_B);
+                s1_b_n  <= cell_hash(s0b_h_cells(0), s0b_v_cells(0), v_frame_n, C_SALT_B);
+                s1_b_n1 <= cell_hash(s0b_h_cells(0), s0b_v_cells(0), v_frame_n1, C_SALT_B);
             end if;
         end if;
     end process p_stage1;
 
     -- =========================================================================
-    -- Stage 2 (T+3): Two-layer mix (grayscale) or passthrough (color)
+    -- Stage 2 (T+4): Two-layer mix (grayscale) or passthrough (color/triangle)
     -- =========================================================================
     p_stage2 : process(clk)
         variable v_mix0 : unsigned(11 downto 0);
         variable v_mix1 : unsigned(11 downto 0);
     begin
         if rising_edge(clk) then
-            if r_color_en = '0' then
-                -- Grayscale: two-layer mix 5/8 + 3/8 on channel 0
+            if r_color_en = '0' and r_triangle_en = '0' then
+                -- Grayscale: two-layer mix 5/8 + 3/8
                 v_mix0 := resize(shift_right(s1_ch_n(0), 1), 12) +
                            resize(shift_right(s1_ch_n(0), 3), 12) +
                            resize(shift_right(s1_b_n, 2), 12) +
                            resize(shift_right(s1_b_n, 3), 12);
-                if v_mix0 > 1023 then
-                    s2_ch_n(0) <= to_unsigned(1023, 10);
-                else
-                    s2_ch_n(0) <= v_mix0(9 downto 0);
-                end if;
+                if v_mix0 > 1023 then s2_ch_n(0) <= to_unsigned(1023, 10);
+                else s2_ch_n(0) <= v_mix0(9 downto 0); end if;
 
                 v_mix1 := resize(shift_right(s1_ch_n1(0), 1), 12) +
                            resize(shift_right(s1_ch_n1(0), 3), 12) +
                            resize(shift_right(s1_b_n1, 2), 12) +
                            resize(shift_right(s1_b_n1, 3), 12);
-                if v_mix1 > 1023 then
-                    s2_ch_n1(0) <= to_unsigned(1023, 10);
-                else
-                    s2_ch_n1(0) <= v_mix1(9 downto 0);
-                end if;
+                if v_mix1 > 1023 then s2_ch_n1(0) <= to_unsigned(1023, 10);
+                else s2_ch_n1(0) <= v_mix1(9 downto 0); end if;
 
-                s2_ch_n(1)  <= (others => '0');
-                s2_ch_n1(1) <= (others => '0');
-                s2_ch_n(2)  <= (others => '0');
-                s2_ch_n1(2) <= (others => '0');
+                s2_ch_n(1) <= (others => '0'); s2_ch_n1(1) <= (others => '0');
+                s2_ch_n(2) <= (others => '0'); s2_ch_n1(2) <= (others => '0');
             else
-                -- Color: passthrough all 3 channels
                 for i in 0 to 2 loop
                     s2_ch_n(i)  <= s1_ch_n(i);
                     s2_ch_n1(i) <= s1_ch_n1(i);
@@ -563,7 +664,7 @@ begin
     end process p_stage2;
 
     -- =========================================================================
-    -- Stage 3 (T+4): Temporal blend x3 channels
+    -- Stage 3 (T+5): Temporal blend x3 channels
     -- =========================================================================
     p_stage3 : process(clk)
         variable v_diff    : signed(10 downto 0);
@@ -579,19 +680,15 @@ begin
                 v_product := v_diff * signed('0' & v_frac);
                 v_result := signed(resize(s2_ch_n(i), 12)) +
                             resize(v_product(20 downto 10), 12);
-                if v_result < 0 then
-                    s3_ch(i) <= (others => '0');
-                elsif v_result > 1023 then
-                    s3_ch(i) <= to_unsigned(1023, 10);
-                else
-                    s3_ch(i) <= unsigned(v_result(9 downto 0));
-                end if;
+                if v_result < 0 then s3_ch(i) <= (others => '0');
+                elsif v_result > 1023 then s3_ch(i) <= to_unsigned(1023, 10);
+                else s3_ch(i) <= unsigned(v_result(9 downto 0)); end if;
             end loop;
         end if;
     end process p_stage3;
 
     -- =========================================================================
-    -- Stage 4 (T+5): Threshold + density x3 channels
+    -- Stage 4 (T+6): Threshold + density x3 channels
     -- =========================================================================
     p_stage4 : process(clk)
     begin
@@ -604,25 +701,22 @@ begin
     end process p_stage4;
 
     -- =========================================================================
-    -- Stage 5 (T+6): Compositing — all modes use palette colors
-    --   Grayscale: ch0 -> Y, palette color 0 UV as tint
-    --   Mix: active channels' palette colors added in YUV (additive overlay)
-    --   Priority: highest active channel -> palette color (winner takes all)
+    -- Stage 5 (T+7): Compositing — palette-based for all modes
     -- =========================================================================
     p_stage5 : process(clk)
         variable v_c0 : t_yuv_color;
         variable v_c1 : t_yuv_color;
         variable v_c2 : t_yuv_color;
-        variable v_y_sum  : unsigned(11 downto 0);
-        variable v_u_sum  : signed(12 downto 0);
-        variable v_v_sum  : signed(12 downto 0);
+        variable v_y_sum : unsigned(11 downto 0);
+        variable v_u_sum : signed(12 downto 0);
+        variable v_v_sum : signed(12 downto 0);
     begin
         if rising_edge(clk) then
             v_c0 := palette_lookup(r_palette_idx, 0);
             v_c1 := palette_lookup(r_palette_idx, 1);
             v_c2 := palette_lookup(r_palette_idx, 2);
 
-            if r_color_en = '0' then
+            if r_color_en = '0' and r_triangle_en = '0' then
                 -- Grayscale: noise as Y, palette color 0 as UV tint
                 s5_y <= s4_ch(0);
                 s5_u <= v_c0.u;
@@ -633,7 +727,6 @@ begin
                 v_y_sum := (others => '0');
                 v_u_sum := (others => '0');
                 v_v_sum := (others => '0');
-
                 if s4_ch(0) > 0 then
                     v_y_sum := v_y_sum + resize(v_c0.y, 12);
                     v_u_sum := v_u_sum + (signed(resize(v_c0.u, 13)) - 512);
@@ -649,48 +742,25 @@ begin
                     v_u_sum := v_u_sum + (signed(resize(v_c2.u, 13)) - 512);
                     v_v_sum := v_v_sum + (signed(resize(v_c2.v, 13)) - 512);
                 end if;
-
-                -- Clamp Y
-                if v_y_sum > 1023 then
-                    s5_y <= to_unsigned(1023, 10);
-                else
-                    s5_y <= v_y_sum(9 downto 0);
-                end if;
-
-                -- Clamp U (Cb + 512)
+                if v_y_sum > 1023 then s5_y <= to_unsigned(1023, 10);
+                else s5_y <= v_y_sum(9 downto 0); end if;
                 v_u_sum := v_u_sum + 512;
-                if v_u_sum < 0 then
-                    s5_u <= to_unsigned(0, 10);
-                elsif v_u_sum > 1023 then
-                    s5_u <= to_unsigned(1023, 10);
-                else
-                    s5_u <= unsigned(v_u_sum(9 downto 0));
-                end if;
-
-                -- Clamp V (Cr + 512)
+                if v_u_sum < 0 then s5_u <= to_unsigned(0, 10);
+                elsif v_u_sum > 1023 then s5_u <= to_unsigned(1023, 10);
+                else s5_u <= unsigned(v_u_sum(9 downto 0)); end if;
                 v_v_sum := v_v_sum + 512;
-                if v_v_sum < 0 then
-                    s5_v <= to_unsigned(0, 10);
-                elsif v_v_sum > 1023 then
-                    s5_v <= to_unsigned(1023, 10);
-                else
-                    s5_v <= unsigned(v_v_sum(9 downto 0));
-                end if;
+                if v_v_sum < 0 then s5_v <= to_unsigned(0, 10);
+                elsif v_v_sum > 1023 then s5_v <= to_unsigned(1023, 10);
+                else s5_v <= unsigned(v_v_sum(9 downto 0)); end if;
 
             else
                 -- Priority: highest active channel wins
                 if s4_ch(0) > 0 then
-                    s5_y <= v_c0.y;
-                    s5_u <= v_c0.u;
-                    s5_v <= v_c0.v;
+                    s5_y <= v_c0.y; s5_u <= v_c0.u; s5_v <= v_c0.v;
                 elsif s4_ch(1) > 0 then
-                    s5_y <= v_c1.y;
-                    s5_u <= v_c1.u;
-                    s5_v <= v_c1.v;
+                    s5_y <= v_c1.y; s5_u <= v_c1.u; s5_v <= v_c1.v;
                 elsif s4_ch(2) > 0 then
-                    s5_y <= v_c2.y;
-                    s5_u <= v_c2.u;
-                    s5_v <= v_c2.v;
+                    s5_y <= v_c2.y; s5_u <= v_c2.u; s5_v <= v_c2.v;
                 else
                     s5_y <= (others => '0');
                     s5_u <= to_unsigned(512, 10);
@@ -701,7 +771,7 @@ begin
     end process p_stage5;
 
     -- =========================================================================
-    -- Stage 6 (T+7): Output register
+    -- Stage 6 (T+8): Output register
     -- =========================================================================
     p_stage6 : process(clk)
     begin

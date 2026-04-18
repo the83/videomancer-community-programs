@@ -86,6 +86,24 @@ name_label = "Compositing"
 value_labels = ["Mix", "Priority"]
 initial_value_label = "Mix"
 
+# Knob 6: Angle — base rotation for triangle mode (full 360 sweep)
+[[parameter]]
+parameter_id = "rotary_potentiometer_6"
+name_label = "Angle"
+control_mode = "polar_degs_360"
+display_min_value = 0
+display_max_value = 360
+initial_value = 0
+display_float_digits = 0
+suffix_label = "deg"
+
+# Switch 9: Triangle Mode
+[[parameter]]
+parameter_id = "toggle_switch_9"
+name_label = "Triangle"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
 # --- Presets ---
 
 [[preset]]
@@ -144,3 +162,14 @@ rotary_potentiometer_4 = 150
 rotary_potentiometer_5 = 512
 toggle_switch_7 = 1
 toggle_switch_8 = 1
+
+[[preset]]
+name = "Triangles"
+rotary_potentiometer_1 = 400
+rotary_potentiometer_3 = 512
+rotary_potentiometer_4 = 100
+rotary_potentiometer_5 = 64
+rotary_potentiometer_6 = 0
+toggle_switch_7 = 1
+toggle_switch_8 = 1
+toggle_switch_9 = 1
