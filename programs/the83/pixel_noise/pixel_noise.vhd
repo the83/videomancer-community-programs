@@ -32,10 +32,9 @@
 --   Stage 2 (two-layer mix / passthrough):      1 clock  -> T+3
 --   Stage 3 (temporal blend x3):                1 clock  -> T+4
 --   Stage 4 (threshold + density x3):           1 clock  -> T+5
---   Stage 5 (compositing):                      1 clock  -> T+6
---   Stage 6 (RGB->YUV / palette lookup):        1 clock  -> T+7
---   Stage 7 (output register):                  1 clock  -> T+8
---   Total: 8 clocks
+--   Stage 5 (compositing + palette lookup):     1 clock  -> T+6
+--   Stage 6 (output register):                  1 clock  -> T+7
+--   Total: 7 clocks
 --
 -- Submodules:
 --   video_timing_generator: sync edge detection
@@ -64,7 +63,7 @@ use work.video_timing_pkg.all;
 
 architecture pixel_noise of program_top is
 
-    constant C_SYNC_DELAY_CLKS : integer := 8;
+    constant C_SYNC_DELAY_CLKS : integer := 7;
 
     -- Channel array type (3 channels: R/G/B or layers 0/1/2)
     type t_ch_array is array(0 to 2) of unsigned(9 downto 0);
@@ -119,30 +118,15 @@ architecture pixel_noise of program_top is
     -- Stage 4: after threshold/density
     signal s4_ch : t_ch_array := (others => (others => '0'));
 
-    -- Stage 5: compositing output
+    -- Stage 5: compositing output (YUV directly, no RGB conversion needed)
     signal s5_y : unsigned(9 downto 0) := (others => '0');
     signal s5_u : unsigned(9 downto 0) := to_unsigned(512, 10);
     signal s5_v : unsigned(9 downto 0) := to_unsigned(512, 10);
-    signal s5_is_rgb : std_logic := '0';  -- needs RGB->YUV conversion
-    -- For RGB->YUV: s5_y/u/v hold R/G/B temporarily
-    signal s5_r : unsigned(9 downto 0) := (others => '0');
-    signal s5_g : unsigned(9 downto 0) := (others => '0');
-    signal s5_b : unsigned(9 downto 0) := (others => '0');
 
-    -- Stage 6: YUV output
+    -- Stage 6: output register
     signal s6_y : unsigned(9 downto 0) := (others => '0');
     signal s6_u : unsigned(9 downto 0) := to_unsigned(512, 10);
     signal s6_v : unsigned(9 downto 0) := to_unsigned(512, 10);
-
-    -- Stage 7: final output register
-    signal s7_y : unsigned(9 downto 0) := (others => '0');
-    signal s7_u : unsigned(9 downto 0) := to_unsigned(512, 10);
-    signal s7_v : unsigned(9 downto 0) := to_unsigned(512, 10);
-
-    -- Latched mode flags for pipeline stages (delayed to match)
-    signal s5_color_en    : std_logic := '0';
-    signal s5_priority_en : std_logic := '0';
-    signal s6_is_rgb      : std_logic := '0';
 
     -- Hash salts (10-bit constants)
     constant C_SALT_A : unsigned(9 downto 0) := "1010010110";  -- 0x296
@@ -200,83 +184,83 @@ architecture pixel_noise of program_top is
         c.v := to_unsigned(512, 10);
 
         case to_integer(pal_idx) is
-            when 0 => -- RGB Primary
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(306, 10), u => to_unsigned(339, 10), v => to_unsigned(1023, 10));
-                    when 1 => c := (y => to_unsigned(601, 10), u => to_unsigned(173, 10), v => to_unsigned(83, 10));
-                    when 2 => c := (y => to_unsigned(117, 10), u => to_unsigned(1023, 10), v => to_unsigned(429, 10));
-                end case;
-            when 1 => -- Warm Orange
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(756, 10), u => to_unsigned(85, 10), v => to_unsigned(702, 10));
-                    when 1 => c := (y => to_unsigned(456, 10), u => to_unsigned(254, 10), v => to_unsigned(916, 10));
-                    when 2 => c := (y => to_unsigned(174, 10), u => to_unsigned(413, 10), v => to_unsigned(804, 10));
-                end case;
-            when 2 => -- Cool Blue
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(675, 10), u => to_unsigned(709, 10), v => to_unsigned(345, 10));
-                    when 1 => c := (y => to_unsigned(291, 10), u => to_unsigned(925, 10), v => to_unsigned(305, 10));
-                    when 2 => c := (y => to_unsigned(66, 10), u => to_unsigned(804, 10), v => to_unsigned(465, 10));
-                end case;
-            when 3 => -- Tropical
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(599, 10), u => to_unsigned(584, 10), v => to_unsigned(85, 10));
-                    when 1 => c := (y => to_unsigned(631, 10), u => to_unsigned(485, 10), v => to_unsigned(792, 10));
-                    when 2 => c := (y => to_unsigned(283, 10), u => to_unsigned(681, 10), v => to_unsigned(412, 10));
-                end case;
-            when 4 => -- Forest
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(599, 10), u => to_unsigned(324, 10), v => to_unsigned(209, 10));
-                    when 1 => c := (y => to_unsigned(396, 10), u => to_unsigned(387, 10), v => to_unsigned(310, 10));
-                    when 2 => c := (y => to_unsigned(203, 10), u => to_unsigned(449, 10), v => to_unsigned(411, 10));
-                end case;
-            when 5 => -- Magenta Fire
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(454, 10), u => to_unsigned(337, 10), v => to_unsigned(816, 10));
-                    when 1 => c := (y => to_unsigned(224, 10), u => to_unsigned(633, 10), v => to_unsigned(768, 10));
-                    when 2 => c := (y => to_unsigned(198, 10), u => to_unsigned(729, 10), v => to_unsigned(685, 10));
-                end case;
-            when 6 => -- Sunset
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(732, 10), u => to_unsigned(99, 10), v => to_unsigned(719, 10));
-                    when 1 => c := (y => to_unsigned(363, 10), u => to_unsigned(388, 10), v => to_unsigned(880, 10));
-                    when 2 => c := (y => to_unsigned(182, 10), u => to_unsigned(658, 10), v => to_unsigned(696, 10));
-                end case;
-            when 7 => -- Neon
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(717, 10), u => to_unsigned(685, 10), v => to_unsigned(0, 10));
-                    when 1 => c := (y => to_unsigned(389, 10), u => to_unsigned(702, 10), v => to_unsigned(965, 10));
-                    when 2 => c := (y => to_unsigned(214, 10), u => to_unsigned(801, 10), v => to_unsigned(673, 10));
-                end case;
-            when 8 => -- Electric
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(822, 10), u => to_unsigned(48, 10), v => to_unsigned(655, 10));
-                    when 1 => c := (y => to_unsigned(424, 10), u => to_unsigned(440, 10), v => to_unsigned(939, 10));
-                    when 2 => c := (y => to_unsigned(126, 10), u => to_unsigned(851, 10), v => to_unsigned(525, 10));
-                end case;
-            when 9 => -- Ocean
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(807, 10), u => to_unsigned(634, 10), v => to_unsigned(352, 10));
-                    when 1 => c := (y => to_unsigned(341, 10), u => to_unsigned(730, 10), v => to_unsigned(269, 10));
-                    when 2 => c := (y => to_unsigned(134, 10), u => to_unsigned(685, 10), v => to_unsigned(416, 10));
-                end case;
-            when 10 => -- Olive
-                case color_idx is
-                    when 0 => c := (y => to_unsigned(582, 10), u => to_unsigned(305, 10), v => to_unsigned(410, 10));
-                    when 1 => c := (y => to_unsigned(335, 10), u => to_unsigned(386, 10), v => to_unsigned(426, 10));
-                    when 2 => c := (y => to_unsigned(200, 10), u => to_unsigned(422, 10), v => to_unsigned(420, 10));
-                end case;
-            when 11 => -- Gray
+            when 0 => -- Gray (knob full left = grayscale)
                 case color_idx is
                     when 0 => c := (y => to_unsigned(1023, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                     when 1 => c := (y => to_unsigned(583, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                     when 2 => c := (y => to_unsigned(297, 10), u => to_unsigned(512, 10), v => to_unsigned(512, 10));
                 end case;
-            when 12 => -- CMY
+            when 1 => -- RGB Primary
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(306, 10), u => to_unsigned(339, 10), v => to_unsigned(1023, 10));
+                    when 1 => c := (y => to_unsigned(601, 10), u => to_unsigned(173, 10), v => to_unsigned(83, 10));
+                    when 2 => c := (y => to_unsigned(117, 10), u => to_unsigned(1023, 10), v => to_unsigned(429, 10));
+                end case;
+            when 2 => -- CMY
                 case color_idx is
                     when 0 => c := (y => to_unsigned(717, 10), u => to_unsigned(685, 10), v => to_unsigned(0, 10));
                     when 1 => c := (y => to_unsigned(422, 10), u => to_unsigned(851, 10), v => to_unsigned(941, 10));
                     when 2 => c := (y => to_unsigned(906, 10), u => to_unsigned(0, 10), v => to_unsigned(595, 10));
+                end case;
+            when 3 => -- Warm Orange
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(756, 10), u => to_unsigned(85, 10), v => to_unsigned(702, 10));
+                    when 1 => c := (y => to_unsigned(456, 10), u => to_unsigned(254, 10), v => to_unsigned(916, 10));
+                    when 2 => c := (y => to_unsigned(174, 10), u => to_unsigned(413, 10), v => to_unsigned(804, 10));
+                end case;
+            when 4 => -- Cool Blue
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(675, 10), u => to_unsigned(709, 10), v => to_unsigned(345, 10));
+                    when 1 => c := (y => to_unsigned(291, 10), u => to_unsigned(925, 10), v => to_unsigned(305, 10));
+                    when 2 => c := (y => to_unsigned(66, 10), u => to_unsigned(804, 10), v => to_unsigned(465, 10));
+                end case;
+            when 5 => -- Tropical
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(599, 10), u => to_unsigned(584, 10), v => to_unsigned(85, 10));
+                    when 1 => c := (y => to_unsigned(631, 10), u => to_unsigned(485, 10), v => to_unsigned(792, 10));
+                    when 2 => c := (y => to_unsigned(283, 10), u => to_unsigned(681, 10), v => to_unsigned(412, 10));
+                end case;
+            when 6 => -- Forest
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(599, 10), u => to_unsigned(324, 10), v => to_unsigned(209, 10));
+                    when 1 => c := (y => to_unsigned(396, 10), u => to_unsigned(387, 10), v => to_unsigned(310, 10));
+                    when 2 => c := (y => to_unsigned(203, 10), u => to_unsigned(449, 10), v => to_unsigned(411, 10));
+                end case;
+            when 7 => -- Magenta Fire
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(454, 10), u => to_unsigned(337, 10), v => to_unsigned(816, 10));
+                    when 1 => c := (y => to_unsigned(224, 10), u => to_unsigned(633, 10), v => to_unsigned(768, 10));
+                    when 2 => c := (y => to_unsigned(198, 10), u => to_unsigned(729, 10), v => to_unsigned(685, 10));
+                end case;
+            when 8 => -- Sunset
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(732, 10), u => to_unsigned(99, 10), v => to_unsigned(719, 10));
+                    when 1 => c := (y => to_unsigned(363, 10), u => to_unsigned(388, 10), v => to_unsigned(880, 10));
+                    when 2 => c := (y => to_unsigned(182, 10), u => to_unsigned(658, 10), v => to_unsigned(696, 10));
+                end case;
+            when 9 => -- Neon
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(717, 10), u => to_unsigned(685, 10), v => to_unsigned(0, 10));
+                    when 1 => c := (y => to_unsigned(389, 10), u => to_unsigned(702, 10), v => to_unsigned(965, 10));
+                    when 2 => c := (y => to_unsigned(214, 10), u => to_unsigned(801, 10), v => to_unsigned(673, 10));
+                end case;
+            when 10 => -- Electric
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(822, 10), u => to_unsigned(48, 10), v => to_unsigned(655, 10));
+                    when 1 => c := (y => to_unsigned(424, 10), u => to_unsigned(440, 10), v => to_unsigned(939, 10));
+                    when 2 => c := (y => to_unsigned(126, 10), u => to_unsigned(851, 10), v => to_unsigned(525, 10));
+                end case;
+            when 11 => -- Ocean
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(807, 10), u => to_unsigned(634, 10), v => to_unsigned(352, 10));
+                    when 1 => c := (y => to_unsigned(341, 10), u => to_unsigned(730, 10), v => to_unsigned(269, 10));
+                    when 2 => c := (y => to_unsigned(134, 10), u => to_unsigned(685, 10), v => to_unsigned(416, 10));
+                end case;
+            when 12 => -- Olive
+                case color_idx is
+                    when 0 => c := (y => to_unsigned(582, 10), u => to_unsigned(305, 10), v => to_unsigned(410, 10));
+                    when 1 => c := (y => to_unsigned(335, 10), u => to_unsigned(386, 10), v => to_unsigned(426, 10));
+                    when 2 => c := (y => to_unsigned(200, 10), u => to_unsigned(422, 10), v => to_unsigned(420, 10));
                 end case;
             when 13 => -- Amber
                 case color_idx is
@@ -389,7 +373,6 @@ begin
     -- =========================================================================
     p_param_latch : process(clk)
         variable v_density    : unsigned(9 downto 0);
-        variable v_thresh_prod : unsigned(19 downto 0);
         variable v_h_knob     : unsigned(9 downto 0);
         variable v_v_knob     : unsigned(9 downto 0);
         variable v_h_sq       : unsigned(19 downto 0);
@@ -409,23 +392,27 @@ begin
                 r_v_cell_width <= to_unsigned(1, 12) + resize(v_v_sq(19 downto 10), 12);
 
                 -- Density -> threshold
+                -- Maps density 0->960 (~6% passes), 960+->0 (all passes)
                 v_density := unsigned(registers_in(2)(9 downto 0));
-                v_thresh_prod := resize(v_density, 20) + resize(v_density & "0", 20);
-                r_threshold <= to_unsigned(768, 10) - v_thresh_prod(11 downto 2);
+                if v_density >= 960 then
+                    r_threshold <= to_unsigned(0, 10);
+                else
+                    r_threshold <= to_unsigned(960, 10) - resize(v_density, 10);
+                end if;
 
-                -- Softness
-                if v_density < 256 then
+                -- Softness (wider at high density for smoother fill)
+                if v_density < 240 then
                     r_softness <= 3;
-                elsif v_density < 512 then
+                elsif v_density < 480 then
                     r_softness <= 2;
-                elsif v_density < 768 then
+                elsif v_density < 720 then
                     r_softness <= 1;
                 else
                     r_softness <= 0;
                 end if;
 
-                -- Boost
-                if v_density < 341 then
+                -- Boost for sparse noise
+                if v_density < 320 then
                     r_boost_en <= '1';
                 else
                     r_boost_en <= '0';
@@ -617,136 +604,116 @@ begin
     end process p_stage4;
 
     -- =========================================================================
-    -- Stage 5 (T+6): Compositing
-    --   Grayscale: ch0 -> Y, neutral UV
-    --   Mix: ch0/1/2 -> R/G/B (needs RGB->YUV in stage 6)
-    --   Priority: highest active channel -> palette color lookup
+    -- Stage 5 (T+6): Compositing — all modes use palette colors
+    --   Grayscale: ch0 -> Y, palette color 0 UV as tint
+    --   Mix: active channels' palette colors added in YUV (additive overlay)
+    --   Priority: highest active channel -> palette color (winner takes all)
     -- =========================================================================
     p_stage5 : process(clk)
-        variable v_pal_color : t_yuv_color;
+        variable v_c0 : t_yuv_color;
+        variable v_c1 : t_yuv_color;
+        variable v_c2 : t_yuv_color;
+        variable v_y_sum  : unsigned(11 downto 0);
+        variable v_u_sum  : signed(12 downto 0);
+        variable v_v_sum  : signed(12 downto 0);
     begin
         if rising_edge(clk) then
-            s5_color_en    <= r_color_en;
-            s5_priority_en <= r_priority_en;
+            v_c0 := palette_lookup(r_palette_idx, 0);
+            v_c1 := palette_lookup(r_palette_idx, 1);
+            v_c2 := palette_lookup(r_palette_idx, 2);
 
             if r_color_en = '0' then
-                -- Grayscale
+                -- Grayscale: noise as Y, palette color 0 as UV tint
                 s5_y <= s4_ch(0);
-                s5_u <= to_unsigned(512, 10);
-                s5_v <= to_unsigned(512, 10);
-                s5_r <= (others => '0');
-                s5_g <= (others => '0');
-                s5_b <= (others => '0');
-                s5_is_rgb <= '0';
+                s5_u <= v_c0.u;
+                s5_v <= v_c0.v;
+
             elsif r_priority_en = '0' then
-                -- Color Mix: channels are R, G, B
-                s5_r <= s4_ch(0);
-                s5_g <= s4_ch(1);
-                s5_b <= s4_ch(2);
-                s5_is_rgb <= '1';
-                s5_y <= (others => '0');
-                s5_u <= to_unsigned(512, 10);
-                s5_v <= to_unsigned(512, 10);
+                -- Mix: additive overlay of palette colors in YUV
+                v_y_sum := (others => '0');
+                v_u_sum := (others => '0');
+                v_v_sum := (others => '0');
+
+                if s4_ch(0) > 0 then
+                    v_y_sum := v_y_sum + resize(v_c0.y, 12);
+                    v_u_sum := v_u_sum + (signed(resize(v_c0.u, 13)) - 512);
+                    v_v_sum := v_v_sum + (signed(resize(v_c0.v, 13)) - 512);
+                end if;
+                if s4_ch(1) > 0 then
+                    v_y_sum := v_y_sum + resize(v_c1.y, 12);
+                    v_u_sum := v_u_sum + (signed(resize(v_c1.u, 13)) - 512);
+                    v_v_sum := v_v_sum + (signed(resize(v_c1.v, 13)) - 512);
+                end if;
+                if s4_ch(2) > 0 then
+                    v_y_sum := v_y_sum + resize(v_c2.y, 12);
+                    v_u_sum := v_u_sum + (signed(resize(v_c2.u, 13)) - 512);
+                    v_v_sum := v_v_sum + (signed(resize(v_c2.v, 13)) - 512);
+                end if;
+
+                -- Clamp Y
+                if v_y_sum > 1023 then
+                    s5_y <= to_unsigned(1023, 10);
+                else
+                    s5_y <= v_y_sum(9 downto 0);
+                end if;
+
+                -- Clamp U (Cb + 512)
+                v_u_sum := v_u_sum + 512;
+                if v_u_sum < 0 then
+                    s5_u <= to_unsigned(0, 10);
+                elsif v_u_sum > 1023 then
+                    s5_u <= to_unsigned(1023, 10);
+                else
+                    s5_u <= unsigned(v_u_sum(9 downto 0));
+                end if;
+
+                -- Clamp V (Cr + 512)
+                v_v_sum := v_v_sum + 512;
+                if v_v_sum < 0 then
+                    s5_v <= to_unsigned(0, 10);
+                elsif v_v_sum > 1023 then
+                    s5_v <= to_unsigned(1023, 10);
+                else
+                    s5_v <= unsigned(v_v_sum(9 downto 0));
+                end if;
+
             else
                 -- Priority: highest active channel wins
-                s5_is_rgb <= '0';
                 if s4_ch(0) > 0 then
-                    v_pal_color := palette_lookup(r_palette_idx, 0);
+                    s5_y <= v_c0.y;
+                    s5_u <= v_c0.u;
+                    s5_v <= v_c0.v;
                 elsif s4_ch(1) > 0 then
-                    v_pal_color := palette_lookup(r_palette_idx, 1);
+                    s5_y <= v_c1.y;
+                    s5_u <= v_c1.u;
+                    s5_v <= v_c1.v;
                 elsif s4_ch(2) > 0 then
-                    v_pal_color := palette_lookup(r_palette_idx, 2);
+                    s5_y <= v_c2.y;
+                    s5_u <= v_c2.u;
+                    s5_v <= v_c2.v;
                 else
-                    v_pal_color := (y => to_unsigned(0, 10),
-                                    u => to_unsigned(512, 10),
-                                    v => to_unsigned(512, 10));
+                    s5_y <= (others => '0');
+                    s5_u <= to_unsigned(512, 10);
+                    s5_v <= to_unsigned(512, 10);
                 end if;
-                s5_y <= v_pal_color.y;
-                s5_u <= v_pal_color.u;
-                s5_v <= v_pal_color.v;
-                s5_r <= (others => '0');
-                s5_g <= (others => '0');
-                s5_b <= (others => '0');
             end if;
         end if;
     end process p_stage5;
 
     -- =========================================================================
-    -- Stage 6 (T+7): RGB->YUV conversion (mix mode) or passthrough
-    --   BT.601 shift-add approximation (matching wrinkle.vhd)
-    --   U = Cb (blue-difference), V = Cr (red-difference)
+    -- Stage 6 (T+7): Output register
     -- =========================================================================
     p_stage6 : process(clk)
-        variable v_r_s : signed(11 downto 0);
-        variable v_g_s : signed(11 downto 0);
-        variable v_b_s : signed(11 downto 0);
-        variable v_y   : signed(11 downto 0);
-        variable v_cb  : signed(11 downto 0);
-        variable v_cr  : signed(11 downto 0);
     begin
         if rising_edge(clk) then
-            s6_is_rgb <= s5_is_rgb;
-
-            if s5_is_rgb = '1' then
-                -- RGB -> YUV conversion
-                v_r_s := signed(resize(s5_r, 12));
-                v_g_s := signed(resize(s5_g, 12));
-                v_b_s := signed(resize(s5_b, 12));
-
-                -- Y = R/4 + G/2 + G/16 + B/8
-                v_y := shift_right(v_r_s, 2) +
-                       shift_right(v_g_s, 1) + shift_right(v_g_s, 4) +
-                       shift_right(v_b_s, 3);
-
-                -- Cb = -R/8 - G/4 + B/2
-                v_cb := -shift_right(v_r_s, 3) -
-                         shift_right(v_g_s, 2) +
-                         shift_right(v_b_s, 1);
-
-                -- Cr = R/2 - G/4 - G/8 - B/16
-                v_cr := shift_right(v_r_s, 1) -
-                        shift_right(v_g_s, 2) - shift_right(v_g_s, 3) -
-                        shift_right(v_b_s, 4);
-
-                -- Clamp Y
-                if v_y < 0 then s6_y <= (others => '0');
-                elsif v_y > 1023 then s6_y <= to_unsigned(1023, 10);
-                else s6_y <= unsigned(v_y(9 downto 0)); end if;
-
-                -- Clamp Cb + 512 -> U
-                v_cb := v_cb + to_signed(512, 12);
-                if v_cb < 0 then s6_u <= (others => '0');
-                elsif v_cb > 1023 then s6_u <= to_unsigned(1023, 10);
-                else s6_u <= unsigned(v_cb(9 downto 0)); end if;
-
-                -- Clamp Cr + 512 -> V
-                v_cr := v_cr + to_signed(512, 12);
-                if v_cr < 0 then s6_v <= (others => '0');
-                elsif v_cr > 1023 then s6_v <= to_unsigned(1023, 10);
-                else s6_v <= unsigned(v_cr(9 downto 0)); end if;
-            else
-                -- Passthrough (grayscale or priority palette)
-                s6_y <= s5_y;
-                s6_u <= s5_u;
-                s6_v <= s5_v;
-            end if;
+            s6_y <= s5_y;
+            s6_u <= s5_u;
+            s6_v <= s5_v;
         end if;
     end process p_stage6;
 
     -- =========================================================================
-    -- Stage 7 (T+8): Output register
-    -- =========================================================================
-    p_stage7 : process(clk)
-    begin
-        if rising_edge(clk) then
-            s7_y <= s6_y;
-            s7_u <= s6_u;
-            s7_v <= s6_v;
-        end if;
-    end process p_stage7;
-
-    -- =========================================================================
-    -- Sync delay line (8 clocks)
+    -- Sync delay line
     -- =========================================================================
     p_sync_delay : process(clk)
         type t_sync_delay is array (0 to C_SYNC_DELAY_CLKS - 1) of std_logic;
@@ -770,8 +737,8 @@ begin
     -- =========================================================================
     -- Output
     -- =========================================================================
-    data_out.y <= std_logic_vector(s7_y);
-    data_out.u <= std_logic_vector(s7_u);
-    data_out.v <= std_logic_vector(s7_v);
+    data_out.y <= std_logic_vector(s6_y);
+    data_out.u <= std_logic_vector(s6_u);
+    data_out.v <= std_logic_vector(s6_v);
 
 end architecture pixel_noise;

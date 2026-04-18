@@ -61,14 +61,14 @@ initial_value = 256
 display_float_digits = 1
 suffix_label = "%"
 
-# Knob 5: Color — channel separation (mix) or palette select (priority)
+# Knob 5: Color — palette select (0 = grayscale, sweep right for colors)
 [[parameter]]
 parameter_id = "rotary_potentiometer_5"
 name_label = "Color"
 control_mode = "linear"
 display_min_value = 0
 display_max_value = 100
-initial_value = 512
+initial_value = 0
 display_float_digits = 1
 suffix_label = "%"
 
