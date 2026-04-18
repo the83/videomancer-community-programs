@@ -13,7 +13,7 @@ author = "Theron Humiston"
 license = "GPL-3.0"
 categories = ["Noise"]
 program_type = "synthesis"
-description = "Pixel noise texture with controllable coherence, density, and speed. Ported from horiz_pixel_noise GLSL shader."
+description = "Noise with color, palette, coherence, density, and speed. From the83/shaderz."
 hardware_compatibility = ["rev_b"]
 core = "yuv444_30b"
 
@@ -61,6 +61,31 @@ initial_value = 256
 display_float_digits = 1
 suffix_label = "%"
 
+# Knob 5: Color — channel separation (mix) or palette select (priority)
+[[parameter]]
+parameter_id = "rotary_potentiometer_5"
+name_label = "Color"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 512
+display_float_digits = 1
+suffix_label = "%"
+
+# Switch 7: Color Enable
+[[parameter]]
+parameter_id = "toggle_switch_7"
+name_label = "Color"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 8: Compositing Mode
+[[parameter]]
+parameter_id = "toggle_switch_8"
+name_label = "Compositing"
+value_labels = ["Mix", "Priority"]
+initial_value_label = "Mix"
+
 # --- Presets ---
 
 [[preset]]
@@ -90,3 +115,32 @@ rotary_potentiometer_1 = 0
 rotary_potentiometer_2 = 700
 rotary_potentiometer_3 = 512
 rotary_potentiometer_4 = 400
+
+[[preset]]
+name = "VHS Static"
+rotary_potentiometer_1 = 0
+rotary_potentiometer_2 = 0
+rotary_potentiometer_3 = 700
+rotary_potentiometer_4 = 300
+rotary_potentiometer_5 = 800
+toggle_switch_7 = 1
+
+[[preset]]
+name = "RGB Blocks"
+rotary_potentiometer_1 = 400
+rotary_potentiometer_2 = 400
+rotary_potentiometer_3 = 512
+rotary_potentiometer_4 = 200
+rotary_potentiometer_5 = 0
+toggle_switch_7 = 1
+toggle_switch_8 = 1
+
+[[preset]]
+name = "Neon City"
+rotary_potentiometer_1 = 300
+rotary_potentiometer_2 = 300
+rotary_potentiometer_3 = 400
+rotary_potentiometer_4 = 150
+rotary_potentiometer_5 = 512
+toggle_switch_7 = 1
+toggle_switch_8 = 1
