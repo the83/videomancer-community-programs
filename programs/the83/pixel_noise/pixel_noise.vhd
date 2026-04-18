@@ -710,11 +710,19 @@ begin
         variable v_y_sum : unsigned(11 downto 0);
         variable v_u_sum : signed(12 downto 0);
         variable v_v_sum : signed(12 downto 0);
+        variable v_pal : unsigned(3 downto 0);
     begin
         if rising_edge(clk) then
-            v_c0 := palette_lookup(r_palette_idx, 0);
-            v_c1 := palette_lookup(r_palette_idx, 1);
-            v_c2 := palette_lookup(r_palette_idx, 2);
+            -- Force Gray palette when color is off (even in triangle mode)
+            if r_color_en = '1' then
+                v_pal := r_palette_idx;
+            else
+                v_pal := to_unsigned(0, 4);  -- Gray
+            end if;
+
+            v_c0 := palette_lookup(v_pal, 0);
+            v_c1 := palette_lookup(v_pal, 1);
+            v_c2 := palette_lookup(v_pal, 2);
 
             if r_color_en = '0' and r_triangle_en = '0' then
                 -- Grayscale: noise as Y, palette color 0 as UV tint
