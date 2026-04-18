@@ -11,17 +11,20 @@
 --   coherence, density, and speed controls. Ported from the horiz_pixel_noise
 --   GLSL shader (the83/shaderz).
 --
---   Generates cell-based pseudo-random noise using combinational XOR hashing
---   with a free-running LFSR for temporal variation. Cell sizes are controlled
---   by coherence knobs via power-of-2 bit shifting. Density is applied as a
---   threshold + softness + boost stage. Animation is driven by a frame phase
---   accumulator with temporal interpolation between frames.
+--   Generates cell-based pseudo-random noise using a combinational
+--   addition-based hash function with good avalanche properties. Cell sizes
+--   are controlled by
+--   coherence knobs via a quadratic curve (cell_width = 1 + knob^2 / 1024),
+--   giving smooth continuous zoom from per-pixel noise to large blocks.
+--   Density is applied as a threshold + softness + boost stage. Animation is
+--   driven by a frame phase accumulator with temporal interpolation between
+--   frames.
 --
 --   This is a synthesis program — input video is ignored, output is generated
 --   noise (grayscale: Y = noise, U = V = 512).
 --
 -- Resources:
---   0 BRAM, ~800 LUTs (estimated)
+--   0 BRAM, ~900 LUTs (estimated)
 --
 -- Pipeline:
 --   Stage 0 (cell computation):                 1 clock  -> T+1
@@ -34,7 +37,6 @@
 -- Submodules:
 --   video_timing_generator: sync edge detection
 --   frame_phase_accumulator: animation phase DDS
---   lfsr16: free-running pseudo-random noise
 --
 -- Parameters:
 --   Pot 1  (registers_in(0)):   H Coherence (cell width, 0=per-pixel, 1023=wide)
@@ -68,19 +70,24 @@ architecture pixel_noise of program_top is
     -- Frame phase accumulator (20-bit: top 10 = frame number, bottom 10 = fraction)
     signal s_phase : unsigned(19 downto 0);
 
-    -- Free-running LFSR
-    signal s_lfsr_q : std_logic_vector(15 downto 0);
 
     -- Vsync-latched parameters
-    signal r_h_shift   : natural range 0 to 10 := 0;
-    signal r_v_shift   : natural range 0 to 10 := 0;
-    signal r_density   : unsigned(9 downto 0)  := to_unsigned(512, 10);
-    signal r_threshold : unsigned(9 downto 0)  := (others => '0');
-    signal r_softness  : natural range 0 to 10 := 5;
-    signal r_boost_en  : std_logic             := '0';
-    signal s_prev_vsync : std_logic            := '1';
+    signal r_h_cell_width : unsigned(11 downto 0) := to_unsigned(1, 12);
+    signal r_v_cell_width : unsigned(11 downto 0) := to_unsigned(1, 12);
+    signal r_density      : unsigned(9 downto 0)  := to_unsigned(512, 10);
+    signal r_threshold    : unsigned(9 downto 0)  := (others => '0');
+    signal r_softness     : natural range 0 to 10 := 5;
+    signal r_boost_en     : std_logic             := '0';
+    signal s_prev_vsync   : std_logic             := '1';
 
-    -- Stage 0 outputs: cell indices
+    -- Cell tracking counters
+    signal s_h_cell_px : unsigned(11 downto 0) := (others => '0');
+    signal s_v_cell_px : unsigned(11 downto 0) := (others => '0');
+    signal s_h_cell    : unsigned(11 downto 0) := (others => '0');
+    signal s_v_cell    : unsigned(11 downto 0) := (others => '0');
+    signal s_prev_hsync : std_logic            := '1';
+
+    -- Stage 0 outputs: registered cell indices
     signal s0_h_cell : unsigned(11 downto 0) := (others => '0');
     signal s0_v_cell : unsigned(11 downto 0) := (others => '0');
 
@@ -100,16 +107,35 @@ architecture pixel_noise of program_top is
     -- Stage 4 output: thresholded/density-controlled noise
     signal s4_y : unsigned(9 downto 0) := (others => '0');
 
-    -- Helper function: XOR hash with rotate
-    function xor_hash(seed : unsigned(11 downto 0);
-                      salt : unsigned(9 downto 0)) return unsigned is
-        variable v : unsigned(11 downto 0);
+    -- Helper function: addition-based hash (better distribution than XOR)
+    --   Uses carry propagation from addition to destroy bit-level patterns.
+    --   Scrambles between x and y contributions so y's effect depends on
+    --   x's already-mixed value, eliminating diagonal artifacts.
+    function cell_hash(cell_x : unsigned(11 downto 0);
+                       cell_y : unsigned(11 downto 0);
+                       frame  : unsigned(9 downto 0);
+                       salt   : unsigned(9 downto 0)) return unsigned is
+        variable v : unsigned(15 downto 0);
+        variable vx : unsigned(15 downto 0);
+        variable vy : unsigned(15 downto 0);
     begin
-        v := seed;
-        v := v xor (v(8 downto 0) & v(11 downto 9));   -- rotate left 3
-        v := v xor (v(4 downto 0) & v(11 downto 5));   -- rotate left 7
-        v := v xor resize(salt, 12);
-        v := v xor (v(6 downto 0) & v(11 downto 7));   -- rotate left 5
+        vx := resize(cell_x, 16);
+        vy := resize(cell_y, 16);
+        -- Start with cell_x * 17 + 1
+        v := (vx(11 downto 0) & "0000") + vx + 1;
+        -- Scramble BEFORE adding cell_y — breaks diagonal linearity
+        v := v xor ("00000" & v(15 downto 5));
+        v := v + (v(12 downto 0) & "000");
+        -- Now add cell_y * 31 (its effect depends on scrambled x)
+        v := v + (vy(10 downto 0) & "00000") - vy;
+        -- Add frame and salt
+        v := v + resize(frame, 16) + resize(salt, 16);
+        -- Final avalanche
+        v := v xor (v(12 downto 0) & v(15 downto 13));
+        v := v + ("00000" & v(15 downto 5));
+        v := v xor ("0000000" & v(15 downto 7));
+        v := v + (v(12 downto 0) & "000");
+        v := v xor ("00000" & v(15 downto 5));
         return v(9 downto 0);
     end function;
 
@@ -148,6 +174,8 @@ begin
 
     -- =========================================================================
     -- Frame Phase Accumulator (animation speed)
+    --   Full 10-bit knob range. At 60fps:
+    --     knob=0: frozen, knob=10: ~1 change/1.7s, knob=1023: ~60 changes/s
     -- =========================================================================
     phase_acc_inst : entity work.frame_phase_accumulator
         generic map(
@@ -162,45 +190,31 @@ begin
             phase   => s_phase
         );
 
-    -- =========================================================================
-    -- Free-running LFSR16
-    -- =========================================================================
-    lfsr_inst : entity work.lfsr16
-        port map(
-            clk    => clk,
-            enable => '1',
-            seed   => x"0000",
-            load   => '0',
-            q      => s_lfsr_q
-        );
 
     -- =========================================================================
     -- Parameter latch on vsync (prevents mid-frame tearing)
     -- =========================================================================
     p_param_latch : process(clk)
-        variable v_h_raw : natural;
-        variable v_v_raw : natural;
-        variable v_density : unsigned(9 downto 0);
+        variable v_density    : unsigned(9 downto 0);
         variable v_thresh_prod : unsigned(19 downto 0);
+        variable v_h_knob     : unsigned(9 downto 0);
+        variable v_v_knob     : unsigned(9 downto 0);
+        variable v_h_sq       : unsigned(19 downto 0);
+        variable v_v_sq       : unsigned(19 downto 0);
     begin
         if rising_edge(clk) then
             s_prev_vsync <= data_in.vsync_n;
             if s_prev_vsync = '1' and data_in.vsync_n = '0' then
-                -- H coherence: top 4 bits -> shift 0..10
-                v_h_raw := to_integer(unsigned(registers_in(0)(9 downto 6)));
-                if v_h_raw > 10 then
-                    r_h_shift <= 10;
-                else
-                    r_h_shift <= v_h_raw;
-                end if;
+                -- H coherence: quadratic curve -> cell_width = 1 + knob^2 / 1024
+                -- knob=0 -> 1px, knob=512 -> 257px, knob=1023 -> 1023px
+                v_h_knob := unsigned(registers_in(0)(9 downto 0));
+                v_h_sq := v_h_knob * v_h_knob;
+                r_h_cell_width <= to_unsigned(1, 12) + resize(v_h_sq(19 downto 10), 12);
 
-                -- V coherence: top 4 bits -> shift 0..10
-                v_v_raw := to_integer(unsigned(registers_in(1)(9 downto 6)));
-                if v_v_raw > 10 then
-                    r_v_shift <= 10;
-                else
-                    r_v_shift <= v_v_raw;
-                end if;
+                -- V coherence: same quadratic curve
+                v_v_knob := unsigned(registers_in(1)(9 downto 0));
+                v_v_sq := v_v_knob * v_v_knob;
+                r_v_cell_width <= to_unsigned(1, 12) + resize(v_v_sq(19 downto 10), 12);
 
                 -- Density
                 v_density := unsigned(registers_in(2)(9 downto 0));
@@ -208,7 +222,6 @@ begin
 
                 -- Precompute threshold: maps density 0->768, 1023->0
                 -- threshold = 768 - density * 3 / 4
-                -- Use shift-add: density*3 = density + density<<1, then >>2
                 v_thresh_prod := resize(v_density, 20) + resize(v_density & "0", 20);
                 r_threshold <= to_unsigned(768, 10) -
                                v_thresh_prod(11 downto 2);
@@ -235,55 +248,60 @@ begin
     end process p_param_latch;
 
     -- =========================================================================
-    -- Stage 0 (T+1): Cell computation via barrel shifter
+    -- Cell tracking counters (replaces barrel shifter for smooth zoom)
+    --   Counter-based: increment cell index when pixel count reaches cell_width.
+    --   Runs continuously with pixel counters; reset on sync boundaries.
     -- =========================================================================
-    p_stage0 : process(clk)
-        variable v_h_cell : unsigned(11 downto 0);
-        variable v_v_cell : unsigned(11 downto 0);
+    p_cell_track : process(clk)
     begin
         if rising_edge(clk) then
-            case r_h_shift is
-                when 0  => v_h_cell := s_hcount;
-                when 1  => v_h_cell := "0" & s_hcount(11 downto 1);
-                when 2  => v_h_cell := "00" & s_hcount(11 downto 2);
-                when 3  => v_h_cell := "000" & s_hcount(11 downto 3);
-                when 4  => v_h_cell := "0000" & s_hcount(11 downto 4);
-                when 5  => v_h_cell := "00000" & s_hcount(11 downto 5);
-                when 6  => v_h_cell := "000000" & s_hcount(11 downto 6);
-                when 7  => v_h_cell := "0000000" & s_hcount(11 downto 7);
-                when 8  => v_h_cell := "00000000" & s_hcount(11 downto 8);
-                when 9  => v_h_cell := "000000000" & s_hcount(11 downto 9);
-                when 10 => v_h_cell := "0000000000" & s_hcount(11 downto 10);
-                when others => v_h_cell := s_hcount;
-            end case;
+            s_prev_hsync <= data_in.hsync_n;
 
-            case r_v_shift is
-                when 0  => v_v_cell := s_vcount;
-                when 1  => v_v_cell := "0" & s_vcount(11 downto 1);
-                when 2  => v_v_cell := "00" & s_vcount(11 downto 2);
-                when 3  => v_v_cell := "000" & s_vcount(11 downto 3);
-                when 4  => v_v_cell := "0000" & s_vcount(11 downto 4);
-                when 5  => v_v_cell := "00000" & s_vcount(11 downto 5);
-                when 6  => v_v_cell := "000000" & s_vcount(11 downto 6);
-                when 7  => v_v_cell := "0000000" & s_vcount(11 downto 7);
-                when 8  => v_v_cell := "00000000" & s_vcount(11 downto 8);
-                when 9  => v_v_cell := "000000000" & s_vcount(11 downto 9);
-                when 10 => v_v_cell := "0000000000" & s_vcount(11 downto 10);
-                when others => v_v_cell := s_vcount;
-            end case;
+            -- Horizontal cell tracking
+            if s_timing.hsync_start = '1' then
+                s_h_cell_px <= (others => '0');
+                s_h_cell    <= (others => '0');
+            elsif s_timing.avid = '1' then
+                if s_h_cell_px >= r_h_cell_width - 1 then
+                    s_h_cell_px <= (others => '0');
+                    s_h_cell    <= s_h_cell + 1;
+                else
+                    s_h_cell_px <= s_h_cell_px + 1;
+                end if;
+            end if;
 
-            s0_h_cell <= v_h_cell;
-            s0_v_cell <= v_v_cell;
+            -- Vertical cell tracking (advances once per line)
+            if s_timing.vsync_start = '1' then
+                s_v_cell_px <= (others => '0');
+                s_v_cell    <= (others => '0');
+            elsif s_timing.hsync_start = '1' then
+                if s_v_cell_px >= r_v_cell_width - 1 then
+                    s_v_cell_px <= (others => '0');
+                    s_v_cell    <= s_v_cell + 1;
+                else
+                    s_v_cell_px <= s_v_cell_px + 1;
+                end if;
+            end if;
+        end if;
+    end process p_cell_track;
+
+    -- =========================================================================
+    -- Stage 0 (T+1): Register cell indices
+    -- =========================================================================
+    p_stage0 : process(clk)
+    begin
+        if rising_edge(clk) then
+            s0_h_cell <= s_h_cell;
+            s0_v_cell <= s_v_cell;
         end if;
     end process p_stage0;
 
     -- =========================================================================
     -- Stage 1 (T+2): Hash computation
     --   4 hash values: 2 layers x 2 temporal frames
-    --   XOR with LFSR for additional randomness
+    --   XOR with frame-latched LFSR for variation without breaking coherence
     -- =========================================================================
     p_stage1 : process(clk)
-        variable v_seed     : unsigned(11 downto 0);
         variable v_frame_n  : unsigned(9 downto 0);
         variable v_frame_n1 : unsigned(9 downto 0);
     begin
@@ -291,28 +309,21 @@ begin
             v_frame_n  := s_phase(19 downto 10);
             v_frame_n1 := s_phase(19 downto 10) + 1;
 
-            -- Base seed: cell_x XOR cell_y
-            v_seed := s0_h_cell xor s0_v_cell;
+            -- Layer A, frame N
+            s1_noise_a0 <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n,
+                                     "1010010110");  -- salt A
 
-            -- Layer A, frame N: hash with frame_n and salt A
-            s1_noise_a0 <= xor_hash(v_seed xor resize(v_frame_n, 12),
-                                    "1010010110")  -- salt 0xA5B
-                           xor unsigned(s_lfsr_q(9 downto 0));
+            -- Layer B, frame N
+            s1_noise_b0 <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n,
+                                     "0111110001");  -- salt B
 
-            -- Layer B, frame N: hash with frame_n and salt B
-            s1_noise_b0 <= xor_hash(v_seed xor resize(v_frame_n, 12),
-                                    "0111110001")  -- salt 0x3E1
-                           xor unsigned(s_lfsr_q(15 downto 6));
+            -- Layer A, frame N+1
+            s1_noise_a1 <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n1,
+                                     "1010010110");
 
-            -- Layer A, frame N+1: hash with frame_n+1 and salt A
-            s1_noise_a1 <= xor_hash(v_seed xor resize(v_frame_n1, 12),
-                                    "1010010110")
-                           xor unsigned(s_lfsr_q(9 downto 0));
-
-            -- Layer B, frame N+1: hash with frame_n+1 and salt B
-            s1_noise_b1 <= xor_hash(v_seed xor resize(v_frame_n1, 12),
-                                    "0111110001")
-                           xor unsigned(s_lfsr_q(15 downto 6));
+            -- Layer B, frame N+1
+            s1_noise_b1 <= cell_hash(s0_h_cell, s0_v_cell, v_frame_n1,
+                                     "0111110001");
         end if;
     end process p_stage1;
 
