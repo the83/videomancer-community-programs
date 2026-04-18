@@ -710,10 +710,14 @@ begin
         variable v_y_sum : unsigned(11 downto 0);
         variable v_u_sum : signed(12 downto 0);
         variable v_v_sum : signed(12 downto 0);
-        variable v_pal : unsigned(3 downto 0);
+        variable v_pal  : unsigned(3 downto 0);
+        variable v_tint : t_yuv_color;
     begin
         if rising_edge(clk) then
-            -- Force Gray palette when color is off (even in triangle mode)
+            -- Tint always uses the selected palette (for grayscale UV tint)
+            v_tint := palette_lookup(r_palette_idx, 0);
+
+            -- Compositing palette: use selected when color on, Gray when off
             if r_color_en = '1' then
                 v_pal := r_palette_idx;
             else
@@ -727,8 +731,8 @@ begin
             if r_color_en = '0' and r_triangle_en = '0' then
                 -- Grayscale: noise as Y, palette color 0 as UV tint
                 s5_y <= s4_ch(0);
-                s5_u <= v_c0.u;
-                s5_v <= v_c0.v;
+                s5_u <= v_tint.u;
+                s5_v <= v_tint.v;
 
             elsif r_priority_en = '0' then
                 -- Mix: additive overlay of palette colors in YUV
