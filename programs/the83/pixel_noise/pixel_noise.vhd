@@ -44,8 +44,8 @@
 --   sin_cos_full_lut_10x10 x3: angle -> sin/cos for coordinate rotation
 --
 -- Parameters:
---   Pot 1  (registers_in(0)):    H Coherence / Cell Size (triangle)
---   Pot 2  (registers_in(1)):    V Coherence (unused in triangle mode)
+--   Pot 1  (registers_in(0)):    Size (cell area, quadratic)
+--   Pot 2  (registers_in(1)):    Shape (center=square, left=vertical, right=horizontal)
 --   Pot 3  (registers_in(2)):    Density
 --   Pot 4  (registers_in(3)):    Speed (animation rate)
 --   Pot 5  (registers_in(4)):    Color/Palette
@@ -432,27 +432,54 @@ begin
     -- Parameter latch on vsync
     -- =========================================================================
     p_param_latch : process(clk)
-        variable v_density  : unsigned(9 downto 0);
-        variable v_h_knob   : unsigned(9 downto 0);
-        variable v_v_knob   : unsigned(9 downto 0);
-        variable v_h_sq     : unsigned(19 downto 0);
-        variable v_v_sq     : unsigned(19 downto 0);
-        variable v_shift    : natural;
+        variable v_density    : unsigned(9 downto 0);
+        variable v_size_knob : unsigned(9 downto 0);
+        variable v_size_sq   : unsigned(19 downto 0);
+        variable v_base_size : unsigned(11 downto 0);
+        variable v_shape_knob : unsigned(9 downto 0);
+        variable v_shape_s   : signed(10 downto 0);
+        variable v_stretch   : unsigned(9 downto 0);
+        variable v_stretched : unsigned(21 downto 0);
+        variable v_shift     : natural;
     begin
         if rising_edge(clk) then
             s_prev_vsync <= data_in.vsync_n;
             if s_prev_vsync = '1' and data_in.vsync_n = '0' then
-                -- H coherence: quadratic curve for cell width
-                v_h_knob := unsigned(registers_in(0)(9 downto 0));
-                v_h_sq := v_h_knob * v_h_knob;
-                r_h_cell_width <= to_unsigned(1, 12) + resize(v_h_sq(19 downto 10), 12);
+                -- Size: quadratic curve -> base_size = 1 + knob^2 / 1024
+                v_size_knob := unsigned(registers_in(0)(9 downto 0));
+                v_size_sq := v_size_knob * v_size_knob;
+                v_base_size := to_unsigned(1, 12) + resize(v_size_sq(19 downto 10), 12);
 
-                -- V coherence: same (unused in triangle mode)
-                v_v_knob := unsigned(registers_in(1)(9 downto 0));
-                v_v_sq := v_v_knob * v_v_knob;
-                r_v_cell_width <= to_unsigned(1, 12) + resize(v_v_sq(19 downto 10), 12);
+                -- Shape: center=square, right=wide, left=tall
+                -- shape_s = knob - 512 (signed, -512 to +511)
+                -- stretch = |shape_s| (0 to 512)
+                -- Stretched axis = base_size * (512 + stretch) >> 9
+                v_shape_knob := unsigned(registers_in(1)(9 downto 0));
+                v_shape_s := signed(resize(v_shape_knob, 11)) - to_signed(512, 11);
 
-                -- Triangle mode: cell shift from H coherence top 4 bits
+                if v_shape_s < 0 then
+                    v_stretch := unsigned(-v_shape_s(9 downto 0));
+                else
+                    v_stretch := unsigned(v_shape_s(9 downto 0));
+                end if;
+
+                v_stretched := v_base_size * (to_unsigned(512, 10) + v_stretch);
+
+                if v_shape_s > 0 then
+                    -- Right of center: stretch horizontal
+                    r_h_cell_width <= v_stretched(20 downto 9);
+                    r_v_cell_width <= v_base_size;
+                elsif v_shape_s < 0 then
+                    -- Left of center: stretch vertical
+                    r_h_cell_width <= v_base_size;
+                    r_v_cell_width <= v_stretched(20 downto 9);
+                else
+                    -- Center: square
+                    r_h_cell_width <= v_base_size;
+                    r_v_cell_width <= v_base_size;
+                end if;
+
+                -- Triangle mode: cell shift from size knob top 4 bits
                 v_shift := to_integer(unsigned(registers_in(0)(9 downto 6)));
                 if v_shift > 10 then
                     r_cell_shift <= 10;

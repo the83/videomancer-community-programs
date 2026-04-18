@@ -17,10 +17,10 @@ description = "Noise with color, palette, coherence, density, and speed. From th
 hardware_compatibility = ["rev_b"]
 core = "yuv444_30b"
 
-# Knob 1: Horizontal Coherence — per-pixel noise to wide horizontal bands
+# Knob 1: Size — cell area (per-pixel noise to large blocks)
 [[parameter]]
 parameter_id = "rotary_potentiometer_1"
-name_label = "H Coherence"
+name_label = "Size"
 control_mode = "linear"
 display_min_value = 0
 display_max_value = 100
@@ -28,14 +28,14 @@ initial_value = 0
 display_float_digits = 1
 suffix_label = "%"
 
-# Knob 2: Vertical Coherence — per-pixel noise to tall vertical columns
+# Knob 2: Shape — cell aspect ratio (left=tall, center=square, right=wide)
 [[parameter]]
 parameter_id = "rotary_potentiometer_2"
-name_label = "V Coherence"
+name_label = "Shape"
 control_mode = "linear"
 display_min_value = 0
 display_max_value = 100
-initial_value = 0
+initial_value = 512
 display_float_digits = 1
 suffix_label = "%"
 
@@ -122,22 +122,20 @@ rotary_potentiometer_4 = 128
 
 [[preset]]
 name = "Rain"
-rotary_potentiometer_1 = 700
-rotary_potentiometer_2 = 0
+rotary_potentiometer_1 = 400
+rotary_potentiometer_2 = 1023
 rotary_potentiometer_3 = 512
 rotary_potentiometer_4 = 800
 
 [[preset]]
 name = "ScanLines"
-rotary_potentiometer_1 = 0
-rotary_potentiometer_2 = 700
+rotary_potentiometer_1 = 400
+rotary_potentiometer_2 = 0
 rotary_potentiometer_3 = 512
 rotary_potentiometer_4 = 400
 
 [[preset]]
 name = "VHS Static"
-rotary_potentiometer_1 = 0
-rotary_potentiometer_2 = 0
 rotary_potentiometer_3 = 700
 rotary_potentiometer_4 = 300
 rotary_potentiometer_5 = 800
@@ -146,20 +144,18 @@ toggle_switch_7 = 1
 [[preset]]
 name = "RGB Blocks"
 rotary_potentiometer_1 = 400
-rotary_potentiometer_2 = 400
 rotary_potentiometer_3 = 512
 rotary_potentiometer_4 = 200
-rotary_potentiometer_5 = 0
+rotary_potentiometer_5 = 64
 toggle_switch_7 = 1
 toggle_switch_8 = 1
 
 [[preset]]
 name = "Neon City"
 rotary_potentiometer_1 = 300
-rotary_potentiometer_2 = 300
 rotary_potentiometer_3 = 400
 rotary_potentiometer_4 = 150
-rotary_potentiometer_5 = 512
+rotary_potentiometer_5 = 576
 toggle_switch_7 = 1
 toggle_switch_8 = 1
 
@@ -169,7 +165,6 @@ rotary_potentiometer_1 = 400
 rotary_potentiometer_3 = 512
 rotary_potentiometer_4 = 100
 rotary_potentiometer_5 = 64
-rotary_potentiometer_6 = 0
 toggle_switch_7 = 1
 toggle_switch_8 = 1
 toggle_switch_9 = 1
