@@ -121,7 +121,6 @@ initial_value_label = "Off"
 # --- Presets ---
 # Size (pot1): base_size = 1 + knob^2/1024 (0→1px, 100→10px, 200→40px, 400→157px)
 # Shape (pot2): 512=square, 0=max tall (113:1), 1023=max wide (113:1)
-# Density (pot3): color/triangle modes divide effective density by 8
 
 [[preset]]
 name = "Snow"
