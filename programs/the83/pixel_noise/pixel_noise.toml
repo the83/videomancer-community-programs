@@ -129,12 +129,6 @@ rotary_potentiometer_3 = 900
 rotary_potentiometer_4 = 400
 
 [[preset]]
-name = "Starfield"
-rotary_potentiometer_1 = 0
-rotary_potentiometer_3 = 100
-rotary_potentiometer_4 = 128
-
-[[preset]]
 name = "Rain"
 rotary_potentiometer_1 = 100
 rotary_potentiometer_2 = 100
@@ -163,14 +157,6 @@ rotary_potentiometer_4 = 200
 rotary_potentiometer_5 = 64
 toggle_switch_7 = 1
 toggle_switch_8 = 1
-
-[[preset]]
-name = "Neon City"
-rotary_potentiometer_1 = 300
-rotary_potentiometer_3 = 700
-rotary_potentiometer_4 = 150
-rotary_potentiometer_5 = 576
-toggle_switch_7 = 1
 
 [[preset]]
 name = "Triangles"
