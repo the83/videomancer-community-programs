@@ -13,7 +13,7 @@ author = "Theron Humiston"
 license = "GPL-3.0"
 categories = ["Geometric"]
 program_type = "synthesis"
-description = "Geometric shapes with color, rotation, outline, concentric rings, invert, and tiling."
+description = "5 shapes with smooth color, rotation, outline, concentric rings, and tiling."
 hardware_compatibility = ["rev_b"]
 core = "yuv444_30b"
 
@@ -108,5 +108,12 @@ initial_value_label = "Off"
 [[parameter]]
 parameter_id = "toggle_switch_10"
 name_label = "Tiled"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 11: Complementary background
+[[parameter]]
+parameter_id = "toggle_switch_11"
+name_label = "Complement"
 value_labels = ["Off", "On"]
 initial_value_label = "Off"

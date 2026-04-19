@@ -7,15 +7,17 @@
 -- Program Name:        Shapey
 -- Author:              Theron Humiston
 -- Overview:
---   Geometric shape synthesis with color, rotation, outline, concentric
---   rings, invert, and tiling. Input video is ignored.
+--   Geometric shape synthesis with smooth color, rotation, outline,
+--   concentric rings, invert, complementary background, and tiling.
+--   Input video is ignored.
 --
---   Shapes: square, circle, triangle (selected by knob 1).
+--   Shapes: square, circle, triangle, diamond, cross.
 --   Rotation via sin/cos LUT. Outline renders shape borders only.
---   Concentric mode repeats shapes in alternating bands from center.
+--   Concentric mode repeats alternating bands from center.
+--   Complementary mode colors the background with the opposite hue.
 --
 -- Resources:
---   0 BRAM, ~500 LUTs (estimated)
+--   0 BRAM, ~600 LUTs (estimated)
 --
 -- Pipeline:
 --   Stage 0 (timing + pixel/tile counters):   1 clock  -> T+1
@@ -27,9 +29,9 @@
 --   Total: 5 clocks
 --
 -- Parameters:
---   Pot 1  (registers_in(0)):    Shape (square / circle / triangle)
+--   Pot 1  (registers_in(0)):    Shape (square/circle/triangle/diamond/cross)
 --   Pot 2  (registers_in(1)):    Size
---   Pot 3  (registers_in(2)):    Color (8-color palette)
+--   Pot 3  (registers_in(2)):    Color (white + smooth hue wheel)
 --   Pot 4  (registers_in(3)):    Rotation angle
 --   Pot 5  (registers_in(4)):    H Offset
 --   Pot 6  (registers_in(5)):    V Offset
@@ -37,6 +39,7 @@
 --   Tog 8  (registers_in(6)(1)): Concentric
 --   Tog 9  (registers_in(6)(2)): Invert
 --   Tog 10 (registers_in(6)(3)): Tiled
+--   Tog 11 (registers_in(6)(4)): Complementary background
 
 --------------------------------------------------------------------------------
 
@@ -78,9 +81,11 @@ architecture shapey of program_top is
     signal s_cos     : signed(9 downto 0);
 
     -- Vsync-latched parameters
-    signal r_shape_sel     : unsigned(1 downto 0) := (others => '0');
+    signal r_shape_sel     : unsigned(2 downto 0) := (others => '0');
     signal r_radius        : unsigned(11 downto 0) := to_unsigned(120, 12);
     signal r_inner_radius  : unsigned(11 downto 0) := to_unsigned(105, 12);
+    signal r_arm_width     : unsigned(11 downto 0) := to_unsigned(30, 12);
+    signal r_inner_arm     : unsigned(11 downto 0) := to_unsigned(15, 12);
     signal r_rad_sq        : unsigned(23 downto 0) := (others => '0');
     signal r_inner_rad_sq  : unsigned(23 downto 0) := (others => '0');
     signal r_center_x      : unsigned(11 downto 0) := to_unsigned(480, 12);
@@ -94,11 +99,15 @@ architecture shapey of program_top is
     signal r_concentric : std_logic := '0';
     signal r_invert     : std_logic := '0';
     signal r_tiled      : std_logic := '0';
+    signal r_complement : std_logic := '0';
 
-    -- Precomputed shape color
+    -- Precomputed foreground and background colors
     signal r_shape_y : unsigned(9 downto 0) := to_unsigned(1023, 10);
     signal r_shape_u : unsigned(9 downto 0) := C_CHROMA_MID;
     signal r_shape_v : unsigned(9 downto 0) := C_CHROMA_MID;
+    signal r_bg_y    : unsigned(9 downto 0) := (others => '0');
+    signal r_bg_u    : unsigned(9 downto 0) := C_CHROMA_MID;
+    signal r_bg_v    : unsigned(9 downto 0) := C_CHROMA_MID;
 
     -- Stage 1: raw deltas
     signal s1_dx : signed(12 downto 0) := (others => '0');
@@ -107,7 +116,7 @@ architecture shapey of program_top is
     -- Stage 2: rotated + abs
     signal s2_abs_dx  : unsigned(11 downto 0) := (others => '0');
     signal s2_abs_dy  : unsigned(11 downto 0) := (others => '0');
-    signal s2_shape   : unsigned(1 downto 0) := (others => '0');
+    signal s2_shape   : unsigned(2 downto 0) := (others => '0');
     signal s2_dy_rot  : signed(12 downto 0) := (others => '0');
     signal s2_cheb    : unsigned(11 downto 0) := (others => '0');
 
@@ -227,7 +236,16 @@ begin
         variable v_radius : unsigned(11 downto 0);
         variable v_inner  : unsigned(11 downto 0);
         variable v_border : unsigned(11 downto 0);
-        variable v_color_idx : unsigned(2 downto 0);
+        variable v_arm    : unsigned(11 downto 0);
+        variable v_inner_arm : unsigned(11 downto 0);
+        -- Color
+        variable v_zone   : unsigned(2 downto 0);
+        variable v_frac   : unsigned(6 downto 0);
+        variable v_y0, v_y1 : unsigned(9 downto 0);
+        variable v_u0, v_u1 : unsigned(9 downto 0);
+        variable v_v0, v_v1 : unsigned(9 downto 0);
+        variable v_dy_c, v_du_c, v_dv_c : signed(10 downto 0);
+        variable v_out_y, v_out_u, v_out_v : signed(10 downto 0);
     begin
         if rising_edge(clk) then
             s_prev_vsync <= s_timing.vsync_start;
@@ -243,17 +261,22 @@ begin
                 r_concentric <= registers_in(6)(1);
                 r_invert     <= registers_in(6)(2);
                 r_tiled      <= registers_in(6)(3);
+                r_complement <= registers_in(6)(4);
 
-                -- Rotation angle (pot4 maps directly to 10-bit angle)
+                -- Rotation angle
                 r_angle <= registers_in(3);
 
-                -- Shape select
-                if v_pot1 < 341 then
-                    r_shape_sel <= "00";
-                elsif v_pot1 < 682 then
-                    r_shape_sel <= "01";
+                -- Shape select: 5 shapes across 0-1023
+                if v_pot1 < 205 then
+                    r_shape_sel <= "000";  -- square
+                elsif v_pot1 < 410 then
+                    r_shape_sel <= "001";  -- circle
+                elsif v_pot1 < 615 then
+                    r_shape_sel <= "010";  -- triangle
+                elsif v_pot1 < 820 then
+                    r_shape_sel <= "011";  -- diamond
                 else
-                    r_shape_sel <= "10";
+                    r_shape_sel <= "100";  -- cross
                 end if;
 
                 -- Size
@@ -276,7 +299,20 @@ begin
                 end if;
                 r_inner_radius <= v_inner;
 
-                -- Precompute squared radii for circle distance tests
+                -- Cross arm width = radius/4, and inner arm for outline
+                v_arm := shift_right(v_radius, 2);
+                if v_arm < 1 then
+                    v_arm := to_unsigned(1, 12);
+                end if;
+                r_arm_width <= v_arm;
+                if v_border >= v_arm then
+                    v_inner_arm := to_unsigned(0, 12);
+                else
+                    v_inner_arm := v_arm - v_border;
+                end if;
+                r_inner_arm <= v_inner_arm;
+
+                -- Precompute squared radii for circle tests
                 r_rad_sq <= resize(v_radius * v_radius, 24);
                 r_inner_rad_sq <= resize(v_inner * v_inner, 24);
 
@@ -287,8 +323,7 @@ begin
                     r_tile_max <= (others => '0');
                 end if;
 
-                -- Ring spacing: select bit based on radius magnitude
-                -- Gives ~4-8 rings visible within the radius
+                -- Ring spacing from radius magnitude
                 if v_radius >= 256 then
                     r_ring_shift <= 6;
                 elsif v_radius >= 128 then
@@ -307,42 +342,88 @@ begin
                 r_center_y <= resize(
                     shift_right(v_pot6 * s_measured_v, 10)(11 downto 0), 12);
 
-                -- Color: 8-color palette
-                v_color_idx := v_pot3(9 downto 7);
-                case to_integer(v_color_idx) is
-                    when 0 =>
-                        r_shape_y <= to_unsigned(1023, 10);
-                        r_shape_u <= C_CHROMA_MID;
-                        r_shape_v <= C_CHROMA_MID;
-                    when 1 =>
-                        r_shape_y <= to_unsigned(306, 10);
-                        r_shape_u <= to_unsigned(339, 10);
-                        r_shape_v <= to_unsigned(1023, 10);
-                    when 2 =>
-                        r_shape_y <= to_unsigned(913, 10);
-                        r_shape_u <= to_unsigned(0, 10);
-                        r_shape_v <= to_unsigned(474, 10);
-                    when 3 =>
-                        r_shape_y <= to_unsigned(601, 10);
-                        r_shape_u <= to_unsigned(173, 10);
-                        r_shape_v <= to_unsigned(83, 10);
-                    when 4 =>
-                        r_shape_y <= to_unsigned(717, 10);
-                        r_shape_u <= to_unsigned(685, 10);
-                        r_shape_v <= to_unsigned(0, 10);
-                    when 5 =>
-                        r_shape_y <= to_unsigned(117, 10);
-                        r_shape_u <= to_unsigned(1023, 10);
-                        r_shape_v <= to_unsigned(429, 10);
-                    when 6 =>
-                        r_shape_y <= to_unsigned(422, 10);
-                        r_shape_u <= to_unsigned(851, 10);
-                        r_shape_v <= to_unsigned(941, 10);
-                    when others =>
-                        r_shape_y <= to_unsigned(610, 10);
-                        r_shape_u <= to_unsigned(169, 10);
-                        r_shape_v <= to_unsigned(749, 10);
+                -- ============================================================
+                -- Color: zone 0 = white, zones 1-7 = smooth hue wheel
+                -- Zone select from top 3 bits, interpolate with lower 7 bits
+                -- ============================================================
+                v_zone := v_pot3(9 downto 7);
+                v_frac := v_pot3(6 downto 0);
+
+                -- Select YUV waypoints for interpolation
+                -- Pre-computed BT.601 YUV at full saturation
+                case to_integer(v_zone) is
+                    when 0 =>  -- White (no interpolation)
+                        v_y0 := to_unsigned(1023, 10);
+                        v_u0 := C_CHROMA_MID;
+                        v_v0 := C_CHROMA_MID;
+                        v_y1 := v_y0; v_u1 := v_u0; v_v1 := v_v0;
+                    when 1 =>  -- Red -> Yellow
+                        v_y0 := to_unsigned(306, 10);  v_y1 := to_unsigned(913, 10);
+                        v_u0 := to_unsigned(339, 10);  v_u1 := to_unsigned(  0, 10);
+                        v_v0 := to_unsigned(1023, 10); v_v1 := to_unsigned(474, 10);
+                    when 2 =>  -- Yellow -> Green
+                        v_y0 := to_unsigned(913, 10);  v_y1 := to_unsigned(601, 10);
+                        v_u0 := to_unsigned(  0, 10);  v_u1 := to_unsigned(173, 10);
+                        v_v0 := to_unsigned(474, 10);  v_v1 := to_unsigned( 83, 10);
+                    when 3 =>  -- Green -> Cyan
+                        v_y0 := to_unsigned(601, 10);  v_y1 := to_unsigned(717, 10);
+                        v_u0 := to_unsigned(173, 10);  v_u1 := to_unsigned(685, 10);
+                        v_v0 := to_unsigned( 83, 10);  v_v1 := to_unsigned(  0, 10);
+                    when 4 =>  -- Cyan -> Blue
+                        v_y0 := to_unsigned(717, 10);  v_y1 := to_unsigned(117, 10);
+                        v_u0 := to_unsigned(685, 10);  v_u1 := to_unsigned(1023, 10);
+                        v_v0 := to_unsigned(  0, 10);  v_v1 := to_unsigned(429, 10);
+                    when 5 =>  -- Blue -> Magenta
+                        v_y0 := to_unsigned(117, 10);  v_y1 := to_unsigned(422, 10);
+                        v_u0 := to_unsigned(1023, 10); v_u1 := to_unsigned(851, 10);
+                        v_v0 := to_unsigned(429, 10);  v_v1 := to_unsigned(941, 10);
+                    when 6 =>  -- Magenta -> Red
+                        v_y0 := to_unsigned(422, 10);  v_y1 := to_unsigned(306, 10);
+                        v_u0 := to_unsigned(851, 10);  v_u1 := to_unsigned(339, 10);
+                        v_v0 := to_unsigned(941, 10);  v_v1 := to_unsigned(1023, 10);
+                    when others =>  -- Red (wrap)
+                        v_y0 := to_unsigned(306, 10);  v_y1 := to_unsigned(306, 10);
+                        v_u0 := to_unsigned(339, 10);  v_u1 := to_unsigned(339, 10);
+                        v_v0 := to_unsigned(1023, 10); v_v1 := to_unsigned(1023, 10);
                 end case;
+
+                -- Interpolate using shift-and-add (top 3 bits of frac)
+                v_dy_c := signed(resize(v_y1, 11)) - signed(resize(v_y0, 11));
+                v_du_c := signed(resize(v_u1, 11)) - signed(resize(v_u0, 11));
+                v_dv_c := signed(resize(v_v1, 11)) - signed(resize(v_v0, 11));
+
+                v_out_y := signed(resize(v_y0, 11));
+                v_out_u := signed(resize(v_u0, 11));
+                v_out_v := signed(resize(v_v0, 11));
+                if v_frac(6) = '1' then
+                    v_out_y := v_out_y + shift_right(v_dy_c, 1);
+                    v_out_u := v_out_u + shift_right(v_du_c, 1);
+                    v_out_v := v_out_v + shift_right(v_dv_c, 1);
+                end if;
+                if v_frac(5) = '1' then
+                    v_out_y := v_out_y + shift_right(v_dy_c, 2);
+                    v_out_u := v_out_u + shift_right(v_du_c, 2);
+                    v_out_v := v_out_v + shift_right(v_dv_c, 2);
+                end if;
+                if v_frac(4) = '1' then
+                    v_out_y := v_out_y + shift_right(v_dy_c, 3);
+                    v_out_u := v_out_u + shift_right(v_du_c, 3);
+                    v_out_v := v_out_v + shift_right(v_dv_c, 3);
+                end if;
+                r_shape_y <= unsigned(v_out_y(9 downto 0));
+                r_shape_u <= unsigned(v_out_u(9 downto 0));
+                r_shape_v <= unsigned(v_out_v(9 downto 0));
+
+                -- Complementary background: invert chroma channels
+                if r_complement = '1' then
+                    r_bg_y <= unsigned(v_out_y(9 downto 0));
+                    r_bg_u <= not unsigned(v_out_u(9 downto 0));
+                    r_bg_v <= not unsigned(v_out_v(9 downto 0));
+                else
+                    r_bg_y <= (others => '0');
+                    r_bg_u <= C_CHROMA_MID;
+                    r_bg_v <= C_CHROMA_MID;
+                end if;
             end if;
         end if;
     end process p_params;
@@ -364,10 +445,11 @@ begin
         variable v_abs_dx : unsigned(11 downto 0);
         variable v_abs_dy : unsigned(11 downto 0);
         -- Stage 3: distance tests
-        variable v_dist_sq : unsigned(23 downto 0);
-        variable v_tri_sum : signed(12 downto 0);
+        variable v_dist_sq  : unsigned(23 downto 0);
+        variable v_tri_sum  : signed(12 downto 0);
         variable v_in_outer : std_logic;
         variable v_in_inner : std_logic;
+        variable v_manhattan : unsigned(12 downto 0);
         -- Stage 4
         variable v_in_shape : std_logic;
     begin
@@ -390,10 +472,7 @@ begin
             s1_dy <= v_dy_s;
 
             -- =================================================================
-            -- Stage 2: rotate coordinates, compute abs and Chebyshev distance
-            -- dx_rot =  dx*cos + dy*sin
-            -- dy_rot = -dx*sin + dy*cos
-            -- sin/cos scaled to [-511,+511], divide by 512 (shift right 9)
+            -- Stage 2: rotate, compute abs and Chebyshev distance
             -- =================================================================
             v_dx_cos := s1_dx * s_cos;
             v_dy_sin := s1_dy * s_sin;
@@ -419,7 +498,6 @@ begin
             s2_dy_rot <= v_dy_rot;
             s2_shape  <= r_shape_sel;
 
-            -- Chebyshev distance for concentric rings
             if v_abs_dx > v_abs_dy then
                 s2_cheb <= v_abs_dx;
             else
@@ -429,10 +507,8 @@ begin
             -- =================================================================
             -- Stage 3: shape distance tests (outer + inner for outline)
             -- =================================================================
-
-            -- Outer shape test
             case s2_shape is
-                when "00" =>
+                when "000" =>  -- Square
                     if s2_abs_dx <= r_radius and s2_abs_dy <= r_radius then
                         v_in_outer := '1';
                     else
@@ -445,7 +521,7 @@ begin
                         v_in_inner := '0';
                     end if;
 
-                when "01" =>
+                when "001" =>  -- Circle
                     v_dist_sq := resize(s2_abs_dx * s2_abs_dx, 24) +
                                  resize(s2_abs_dy * s2_abs_dy, 24);
                     if v_dist_sq <= r_rad_sq then
@@ -459,8 +535,7 @@ begin
                         v_in_inner := '0';
                     end if;
 
-                when others =>
-                    -- Triangle outer
+                when "010" =>  -- Triangle
                     v_tri_sum := s2_dy_rot + signed(resize(r_radius, 13));
                     if v_tri_sum < 0 then
                         v_in_outer := '0';
@@ -486,11 +561,44 @@ begin
                     else
                         v_in_inner := '0';
                     end if;
+
+                when "011" =>  -- Diamond (Manhattan distance)
+                    v_manhattan := resize(s2_abs_dx, 13) +
+                                   resize(s2_abs_dy, 13);
+                    if v_manhattan <= resize(r_radius, 13) then
+                        v_in_outer := '1';
+                    else
+                        v_in_outer := '0';
+                    end if;
+                    if v_manhattan <= resize(r_inner_radius, 13) then
+                        v_in_inner := '1';
+                    else
+                        v_in_inner := '0';
+                    end if;
+
+                when others =>  -- Cross
+                    -- Outer: horizontal or vertical arm
+                    if (s2_abs_dx <= r_arm_width and
+                        s2_abs_dy <= r_radius) or
+                       (s2_abs_dy <= r_arm_width and
+                        s2_abs_dx <= r_radius) then
+                        v_in_outer := '1';
+                    else
+                        v_in_outer := '0';
+                    end if;
+                    -- Inner: narrower arms for outline
+                    if (s2_abs_dx <= r_inner_arm and
+                        s2_abs_dy <= r_inner_radius) or
+                       (s2_abs_dy <= r_inner_arm and
+                        s2_abs_dx <= r_inner_radius) then
+                        v_in_inner := '1';
+                    else
+                        v_in_inner := '0';
+                    end if;
             end case;
 
             s3_inside_outer <= v_in_outer;
             s3_inside_inner <= v_in_inner;
-            -- Ring band from Chebyshev distance bit
             s3_ring_band <= s2_cheb(r_ring_shift);
 
             -- =================================================================
@@ -511,9 +619,9 @@ begin
                 s4_u <= r_shape_u;
                 s4_v <= r_shape_v;
             else
-                s4_y <= to_unsigned(0, 10);
-                s4_u <= C_CHROMA_MID;
-                s4_v <= C_CHROMA_MID;
+                s4_y <= r_bg_y;
+                s4_u <= r_bg_u;
+                s4_v <= r_bg_v;
             end if;
         end if;
     end process p_render;
