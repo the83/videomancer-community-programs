@@ -104,39 +104,54 @@ name_label = "Triangle"
 value_labels = ["Off", "On"]
 initial_value_label = "Off"
 
+# Switch 10: Invert
+[[parameter]]
+parameter_id = "toggle_switch_10"
+name_label = "Invert"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 11: Mirror
+[[parameter]]
+parameter_id = "toggle_switch_11"
+name_label = "Mirror"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
 # --- Presets ---
+# Size (pot1): base_size = 1 + knob^2/1024 (0→1px, 100→10px, 200→40px, 400→157px)
+# Shape (pot2): 512=square, 0=max tall (113:1), 1023=max wide (113:1)
+# Density (pot3): color/triangle modes divide effective density by 8
 
 [[preset]]
 name = "Snow"
 rotary_potentiometer_1 = 0
-rotary_potentiometer_2 = 0
 rotary_potentiometer_3 = 900
 rotary_potentiometer_4 = 400
 
 [[preset]]
 name = "Starfield"
 rotary_potentiometer_1 = 0
-rotary_potentiometer_2 = 0
 rotary_potentiometer_3 = 100
 rotary_potentiometer_4 = 128
 
 [[preset]]
 name = "Rain"
-rotary_potentiometer_1 = 400
-rotary_potentiometer_2 = 1023
-rotary_potentiometer_3 = 512
+rotary_potentiometer_1 = 100
+rotary_potentiometer_2 = 100
+rotary_potentiometer_3 = 500
 rotary_potentiometer_4 = 800
 
 [[preset]]
 name = "ScanLines"
-rotary_potentiometer_1 = 400
-rotary_potentiometer_2 = 0
-rotary_potentiometer_3 = 512
+rotary_potentiometer_1 = 100
+rotary_potentiometer_2 = 924
+rotary_potentiometer_3 = 500
 rotary_potentiometer_4 = 400
 
 [[preset]]
 name = "VHS Static"
-rotary_potentiometer_3 = 700
+rotary_potentiometer_3 = 900
 rotary_potentiometer_4 = 300
 rotary_potentiometer_5 = 800
 toggle_switch_7 = 1
@@ -144,7 +159,7 @@ toggle_switch_7 = 1
 [[preset]]
 name = "RGB Blocks"
 rotary_potentiometer_1 = 400
-rotary_potentiometer_3 = 512
+rotary_potentiometer_3 = 800
 rotary_potentiometer_4 = 200
 rotary_potentiometer_5 = 64
 toggle_switch_7 = 1
@@ -153,18 +168,31 @@ toggle_switch_8 = 1
 [[preset]]
 name = "Neon City"
 rotary_potentiometer_1 = 300
-rotary_potentiometer_3 = 400
+rotary_potentiometer_3 = 700
 rotary_potentiometer_4 = 150
 rotary_potentiometer_5 = 576
 toggle_switch_7 = 1
-toggle_switch_8 = 1
 
 [[preset]]
 name = "Triangles"
 rotary_potentiometer_1 = 400
-rotary_potentiometer_3 = 512
+rotary_potentiometer_3 = 800
 rotary_potentiometer_4 = 100
 rotary_potentiometer_5 = 64
 toggle_switch_7 = 1
-toggle_switch_8 = 1
 toggle_switch_9 = 1
+
+[[preset]]
+name = "Rorschach"
+rotary_potentiometer_1 = 300
+rotary_potentiometer_3 = 950
+rotary_potentiometer_4 = 200
+rotary_potentiometer_5 = 576
+toggle_switch_7 = 1
+toggle_switch_11 = 1
+
+[[preset]]
+name = "Negative"
+rotary_potentiometer_3 = 700
+rotary_potentiometer_4 = 350
+toggle_switch_10 = 1

@@ -53,6 +53,8 @@
 --   Tog 7  (registers_in(6)(0)): Color enable (Off=grayscale, On=color)
 --   Tog 8  (registers_in(6)(1)): Compositing (Mix / Priority)
 --   Tog 9  (registers_in(6)(2)): Triangle mode (Off / On)
+--   Tog 10 (registers_in(6)(3)): Invert (Off / On)
+--   Tog 11 (registers_in(6)(4)): Mirror (Off / On)
 
 --------------------------------------------------------------------------------
 
@@ -93,6 +95,8 @@ architecture pixel_noise of program_top is
     signal r_color_en     : std_logic             := '0';
     signal r_priority_en  : std_logic             := '0';
     signal r_triangle_en  : std_logic             := '0';
+    signal r_invert_en    : std_logic             := '0';
+    signal r_mirror_en    : std_logic             := '0';
     signal r_ch_offset    : unsigned(5 downto 0)  := (others => '0');
     signal r_palette_idx  : unsigned(3 downto 0)  := (others => '0');
     signal r_cell_shift   : natural range 0 to 10 := 0;
@@ -124,6 +128,12 @@ architecture pixel_noise of program_top is
     -- Normal mode: just register the counter cells
     signal s0a_h_cell : unsigned(11 downto 0) := (others => '0');
     signal s0a_v_cell : unsigned(11 downto 0) := (others => '0');
+    -- Mirror: registered condition for stage 0b pipeline alignment
+    signal s0a_mirror_active : std_logic := '0';
+
+    -- Mirror mode: max cell index and screen midpoint (captured per line)
+    signal r_max_h_cell : unsigned(11 downto 0) := (others => '0');
+    signal r_h_midpoint : unsigned(11 downto 0) := to_unsigned(960, 12);
 
     -- Stage 0b: per-channel cell indices
     signal s0b_h_cells : t_cell_array := (others => (others => '0'));
@@ -543,6 +553,8 @@ begin
                 r_color_en    <= registers_in(6)(0);
                 r_priority_en <= registers_in(6)(1);
                 r_triangle_en <= registers_in(6)(2);
+                r_invert_en   <= registers_in(6)(3);
+                r_mirror_en   <= registers_in(6)(4);
 
                 -- Knob 5: channel offset / palette index
                 r_ch_offset   <= unsigned(registers_in(4)(9 downto 4));
@@ -562,6 +574,9 @@ begin
             s_prev_hsync <= data_in.hsync_n;
 
             if s_timing.hsync_start = '1' then
+                -- Capture max cell and midpoint before reset (for mirror)
+                r_max_h_cell <= s_h_cell;
+                r_h_midpoint <= '0' & s_hcount(11 downto 1);
                 s_h_cell_px <= (others => '0');
                 s_h_cell    <= (others => '0');
             elsif s_timing.avid = '1' then
@@ -591,13 +606,29 @@ begin
     -- Stage 0a (T+1): Rotation multiply (triangle) or register counters
     -- =========================================================================
     p_stage0a : process(clk)
+        variable v_h_coord  : signed(9 downto 0);
+        variable v_mirror_h : unsigned(11 downto 0);
     begin
         if rising_edge(clk) then
+            -- Register mirror condition for stage 0b pipeline alignment
+            if r_mirror_en = '1' and s_hcount >= r_h_midpoint then
+                s0a_mirror_active <= '1';
+            else
+                s0a_mirror_active <= '0';
+            end if;
+
             if r_triangle_en = '1' then
+                -- Compute effective h coordinate (mirror: reflect right half)
+                if r_mirror_en = '1' and s_hcount >= r_h_midpoint then
+                    v_mirror_h := (r_h_midpoint(10 downto 0) & '0') - 1 - s_hcount;
+                    v_h_coord := signed(resize(v_mirror_h(11 downto 2), 10));
+                else
+                    v_h_coord := signed(resize(s_hcount(11 downto 2), 10));
+                end if;
                 -- Single rotation at base angle (channel 0): 4 products only
                 -- 10-bit coords × 8-bit sin/cos = 18-bit products
-                s0a_hcos <= signed(resize(s_hcount(11 downto 2), 10)) * r_cos_base(9 downto 2);
-                s0a_hsin <= signed(resize(s_hcount(11 downto 2), 10)) * r_sin_base(9 downto 2);
+                s0a_hcos <= v_h_coord * r_cos_base(9 downto 2);
+                s0a_hsin <= v_h_coord * r_sin_base(9 downto 2);
                 s0a_vcos <= signed(resize(s_vcount(11 downto 2), 10)) * r_cos_base(9 downto 2);
                 s0a_vsin <= signed(resize(s_vcount(11 downto 2), 10)) * r_sin_base(9 downto 2);
             else
@@ -632,11 +663,18 @@ begin
                 s0b_v_cells(2) <= extract_cell(v_rx - shift_right(v_rx, 3) - shift_right(v_ry, 1), r_cell_shift);
             else
                 -- Normal mode: shared cell from counter, with per-channel offsets
-                s0b_h_cells(0) <= s0a_h_cell;
+                -- Mirror: reflect right half using max cell from previous line
+                if s0a_mirror_active = '1' then
+                    s0b_h_cells(0) <= r_max_h_cell - s0a_h_cell;
+                    s0b_h_cells(1) <= r_max_h_cell - s0a_h_cell + resize(r_ch_offset, 12);
+                    s0b_h_cells(2) <= r_max_h_cell - s0a_h_cell - resize(r_ch_offset, 12);
+                else
+                    s0b_h_cells(0) <= s0a_h_cell;
+                    s0b_h_cells(1) <= s0a_h_cell + resize(r_ch_offset, 12);
+                    s0b_h_cells(2) <= s0a_h_cell - resize(r_ch_offset, 12);
+                end if;
                 s0b_v_cells(0) <= s0a_v_cell;
-                s0b_h_cells(1) <= s0a_h_cell + resize(r_ch_offset, 12);
                 s0b_v_cells(1) <= s0a_v_cell;
-                s0b_h_cells(2) <= s0a_h_cell - resize(r_ch_offset, 12);
                 s0b_v_cells(2) <= s0a_v_cell;
             end if;
         end if;
@@ -841,7 +879,11 @@ begin
     p_stage6 : process(clk)
     begin
         if rising_edge(clk) then
-            s6_y <= s5_y;
+            if r_invert_en = '1' then
+                s6_y <= to_unsigned(1023, 10) - s5_y;
+            else
+                s6_y <= s5_y;
+            end if;
             s6_u <= s5_u;
             s6_v <= s5_v;
         end if;
