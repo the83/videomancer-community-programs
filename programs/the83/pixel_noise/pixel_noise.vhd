@@ -439,7 +439,9 @@ begin
         variable v_shape_knob : unsigned(9 downto 0);
         variable v_shape_s   : signed(10 downto 0);
         variable v_stretch   : unsigned(9 downto 0);
-        variable v_stretched : unsigned(21 downto 0);
+        variable v_stretch_sq : unsigned(19 downto 0);
+        variable v_ratio     : unsigned(11 downto 0);
+        variable v_stretched : unsigned(23 downto 0);
         variable v_shift     : natural;
     begin
         if rising_edge(clk) then
@@ -451,9 +453,9 @@ begin
                 v_base_size := to_unsigned(1, 12) + resize(v_size_sq(19 downto 10), 12);
 
                 -- Shape: center=square, right=wide, left=tall
-                -- shape_s = knob - 512 (signed, -512 to +511)
-                -- stretch = |shape_s| (0 to 512)
-                -- Stretched axis = base_size * (512 + stretch) >> 9
+                -- Quadratic stretch: ratio = 1 + (stretch/512)^2 * 7
+                -- At center: ratio=1 (square). At extremes: ratio=8 (8:1 aspect)
+                -- ratio = (64 + stretch^2 * 7 / 256) >> 6  [in 6-bit fixed point]
                 v_shape_knob := unsigned(registers_in(1)(9 downto 0));
                 v_shape_s := signed(resize(v_shape_knob, 11)) - to_signed(512, 11);
 
@@ -463,16 +465,29 @@ begin
                     v_stretch := unsigned(v_shape_s(9 downto 0));
                 end if;
 
-                v_stretched := v_base_size * (to_unsigned(512, 10) + v_stretch);
+                -- stretch^2 / 256 gives 0-1024 range, *7 = 0-7168
+                -- Add 64 for the base 1x, total 64-7232, >>6 = ratio 1-113
+                -- Clamp ratio to max useful value (4095 to fit 12 bits)
+                v_stretch_sq := v_stretch * v_stretch;
+                v_ratio := to_unsigned(64, 12) +
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- stretch^2/256
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- *2
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- *3
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- *4
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- *5
+                           resize(v_stretch_sq(19 downto 8), 12) +  -- *6
+                           resize(v_stretch_sq(19 downto 8), 12);   -- *7
+                -- stretched = base_size * ratio >> 6
+                v_stretched := resize(v_base_size * v_ratio, 24);
 
                 if v_shape_s > 0 then
                     -- Right of center: stretch horizontal
-                    r_h_cell_width <= v_stretched(20 downto 9);
+                    r_h_cell_width <= v_stretched(17 downto 6);
                     r_v_cell_width <= v_base_size;
                 elsif v_shape_s < 0 then
                     -- Left of center: stretch vertical
                     r_h_cell_width <= v_base_size;
-                    r_v_cell_width <= v_stretched(20 downto 9);
+                    r_v_cell_width <= v_stretched(17 downto 6);
                 else
                     -- Center: square
                     r_h_cell_width <= v_base_size;
