@@ -503,14 +503,25 @@ begin
                 end if;
 
                 -- Density -> threshold
+                -- When color/triangle is on, 3 channels each have independent
+                -- probability of exceeding threshold, so apparent density is ~3x.
+                -- Compensate by halving effective density (shift right 1).
                 v_density := unsigned(registers_in(2)(9 downto 0));
+                if registers_in(6)(0) = '1' or registers_in(6)(2) = '1' then
+                    -- Color or triangle: 3 independent channels + no two-layer
+                    -- mixing makes apparent density much higher. Aggressive
+                    -- reduction to match grayscale visual density.
+                    v_density := "000" & v_density(9 downto 3);
+                end if;
+
                 if v_density >= 960 then
                     r_threshold <= to_unsigned(0, 10);
                 else
                     r_threshold <= to_unsigned(960, 10) - resize(v_density, 10);
                 end if;
 
-                -- Softness
+                -- Softness (use original density for feel)
+                v_density := unsigned(registers_in(2)(9 downto 0));
                 if v_density < 240 then
                     r_softness <= 3;
                 elsif v_density < 480 then
