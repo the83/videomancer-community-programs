@@ -415,7 +415,8 @@ begin
                 r_shape_v <= unsigned(v_out_v(9 downto 0));
 
                 -- Complementary background: invert chroma channels
-                if r_complement = '1' then
+                -- White (zone 0) has no chroma to invert, so use black
+                if r_complement = '1' and v_zone /= 0 then
                     r_bg_y <= unsigned(v_out_y(9 downto 0));
                     r_bg_u <= not unsigned(v_out_u(9 downto 0));
                     r_bg_v <= not unsigned(v_out_v(9 downto 0));
