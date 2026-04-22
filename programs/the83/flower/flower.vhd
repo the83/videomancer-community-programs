@@ -37,7 +37,7 @@
 --   Tog 7  (registers_in(6)(0)): Animate (continuous rotation + concentric pulse)
 --   Tog 8  (registers_in(6)(1)): Fill (solid petals with inner radius from Width)
 --   Tog 9  (registers_in(6)(2)): Concentric (repeating rings)
---   Tog 10 (registers_in(6)(3)): Invert (swap foreground/background)
+--   Tog 10 (registers_in(6)(3)): Double (interleaved second petal layer)
 --   Tog 11 (registers_in(6)(4)): Star (pointy petals, wider gaps)
 
 --------------------------------------------------------------------------------
@@ -97,7 +97,7 @@ architecture flower of program_top is
     signal r_animate     : std_logic := '0';
     signal r_fill        : std_logic := '0';
     signal r_concentric  : std_logic := '0';
-    signal r_invert      : std_logic := '0';
+    signal r_double      : std_logic := '0';
     signal r_star        : std_logic := '0';
 
     -- Stage 1 outputs: rotated centered coordinates
@@ -212,7 +212,7 @@ begin
                 r_animate     <= registers_in(6)(0);
                 r_fill        <= registers_in(6)(1);
                 r_concentric  <= registers_in(6)(2);
-                r_invert      <= registers_in(6)(3);
+                r_double      <= registers_in(6)(3);
                 r_star        <= registers_in(6)(4);
 
                 r_frame <= r_frame + 1;
@@ -277,6 +277,12 @@ begin
         variable v_inner      : unsigned(11 downto 0);
         variable v_diff       : unsigned(11 downto 0);
         variable v_on_curve   : std_logic;
+        -- Double mode (second interleaved petal layer)
+        variable v_n_angle_2    : unsigned(9 downto 0);
+        variable v_petal_wave_2 : unsigned(7 downto 0);
+        variable v_star_sq_2    : unsigned(15 downto 0);
+        variable v_petal_prod_2 : unsigned(17 downto 0);
+        variable v_petal_rad_2  : unsigned(11 downto 0);
         -- Color
         variable v_angle_hue : unsigned(7 downto 0);
         variable v_petal_hue : unsigned(7 downto 0);
@@ -450,9 +456,42 @@ begin
                 end if;
             end if;
 
-            -- Invert: swap foreground/background
-            if r_invert = '1' then
-                v_on_curve := not v_on_curve;
+            -- Double: interleaved second petal layer offset by half a petal.
+            -- When animating, the offset drifts over time so the two layers
+            -- rotate at different rates, weaving in and out of phase.
+            if r_double = '1' then
+                if r_animate = '1' then
+                    v_n_angle_2 := v_n_angle + 256 +
+                                   resize(r_frame(10 downto 1), 10);
+                else
+                    v_n_angle_2 := v_n_angle + 256;
+                end if;
+                if v_n_angle_2(8) = '0' then
+                    v_petal_wave_2 := to_unsigned(255, 8) -
+                                      unsigned(v_n_angle_2(7 downto 0));
+                else
+                    v_petal_wave_2 := unsigned(v_n_angle_2(7 downto 0));
+                end if;
+                if r_star = '1' then
+                    v_star_sq_2 := v_petal_wave_2 * v_petal_wave_2;
+                    v_petal_wave_2 := unsigned(v_star_sq_2(15 downto 8));
+                end if;
+                v_petal_prod_2 := resize(r_size, 10) * resize(v_petal_wave_2, 8);
+                v_petal_rad_2  := resize(shift_right(v_petal_prod_2, 8), 12);
+                if r_fill = '1' then
+                    if v_pixel_rad >= v_inner and v_pixel_rad <= v_petal_rad_2 then
+                        v_on_curve := '1';
+                    end if;
+                else
+                    if v_pixel_rad > v_petal_rad_2 then
+                        v_diff := v_pixel_rad - v_petal_rad_2;
+                    else
+                        v_diff := v_petal_rad_2 - v_pixel_rad;
+                    end if;
+                    if v_diff <= resize(r_width, 12) + 2 then
+                        v_on_curve := '1';
+                    end if;
+                end if;
             end if;
 
             -- Color inputs

@@ -105,10 +105,10 @@ name_label = "Concentric"
 value_labels = ["Off", "On"]
 initial_value_label = "Off"
 
-# Switch 10: Invert (swap foreground/background)
+# Switch 10: Double (interleaved second petal layer)
 [[parameter]]
 parameter_id = "toggle_switch_10"
-name_label = "Invert"
+name_label = "Double"
 value_labels = ["Off", "On"]
 initial_value_label = "Off"
 
