@@ -1,0 +1,120 @@
+# Copyright (C) 2026 Theron Humiston
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# This file is part of Videomancer Community Programs.
+# See LICENSE file in the repository root for full license text.
+
+[program]
+program_id = "com.the83.flower"
+program_name = "Flower"
+program_version = "1.0.0"
+abi_version = ">=1.0,<2.0"
+author = "Theron Humiston"
+license = "GPL-3.0"
+categories = ["Geometric", "Generative"]
+program_type = "synthesis"
+description = "Rose-curve flower synthesis with CORDIC polar math, twist spirals, star mode, and concentric rings."
+hardware_compatibility = ["rev_b"]
+core = "yuv444_30b"
+
+# Knob 1: Petals (number of lobes, 2-12)
+# Default 233 gives 4 petals (classic rose)
+[[parameter]]
+parameter_id = "rotary_potentiometer_1"
+name_label = "Petals"
+control_mode = "linear"
+display_min_value = 2
+display_max_value = 12
+initial_value = 233
+display_float_digits = 0
+suffix_label = ""
+
+# Knob 2: Size (petal radius)
+[[parameter]]
+parameter_id = "rotary_potentiometer_2"
+name_label = "Size"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 400
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 3: Color palette
+[[parameter]]
+parameter_id = "rotary_potentiometer_3"
+name_label = "Color"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 0
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 4: Rotation angle
+[[parameter]]
+parameter_id = "rotary_potentiometer_4"
+name_label = "Angle"
+control_mode = "polar_degs_360"
+display_min_value = 0
+display_max_value = 360
+initial_value = 0
+display_float_digits = 0
+suffix_label = "deg"
+
+# Knob 5: Width (line thickness)
+[[parameter]]
+parameter_id = "rotary_potentiometer_5"
+name_label = "Width"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 512
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 6: Twist (spiral arm curvature, center = no twist)
+[[parameter]]
+parameter_id = "rotary_potentiometer_6"
+name_label = "Twist"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 512
+display_float_digits = 1
+suffix_label = "%"
+
+# Switch 7: Animate (continuous rotation)
+[[parameter]]
+parameter_id = "toggle_switch_7"
+name_label = "Animate"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 8: Fill (solid petals vs outline)
+[[parameter]]
+parameter_id = "toggle_switch_8"
+name_label = "Fill"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 9: Concentric (repeating rings)
+[[parameter]]
+parameter_id = "toggle_switch_9"
+name_label = "Concentric"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 10: Invert (swap foreground/background)
+[[parameter]]
+parameter_id = "toggle_switch_10"
+name_label = "Invert"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 11: Star (pointy petals with wider gaps)
+[[parameter]]
+parameter_id = "toggle_switch_11"
+name_label = "Star"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
