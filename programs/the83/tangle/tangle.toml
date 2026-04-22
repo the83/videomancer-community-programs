@@ -1,0 +1,119 @@
+# Copyright (C) 2026 Theron Humiston
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# This file is part of Videomancer Community Programs.
+# See LICENSE file in the repository root for full license text.
+
+[program]
+program_id = "com.the83.tangle"
+program_name = "Tangle"
+program_version = "1.0.0"
+abi_version = ">=1.0,<2.0"
+author = "Theron Humiston"
+license = "GPL-3.0"
+categories = ["Geometric", "Generative"]
+program_type = "synthesis"
+description = "Integer multiply interference patterns with rotation, bit window, and aspect lock."
+hardware_compatibility = ["rev_b"]
+core = "yuv444_30b"
+
+# Knob 1: Bit Window (which slice of the result bits to show)
+[[parameter]]
+parameter_id = "rotary_potentiometer_1"
+name_label = "Bit Window"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 0
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 2: Zoom
+[[parameter]]
+parameter_id = "rotary_potentiometer_2"
+name_label = "Zoom"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 0
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 3: Color palette
+[[parameter]]
+parameter_id = "rotary_potentiometer_3"
+name_label = "Color"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 0
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 4: Rotation angle
+[[parameter]]
+parameter_id = "rotary_potentiometer_4"
+name_label = "Angle"
+control_mode = "polar_degs_360"
+display_min_value = 0
+display_max_value = 360
+initial_value = 0
+display_float_digits = 0
+suffix_label = "deg"
+
+# Knob 5: X Pan
+[[parameter]]
+parameter_id = "rotary_potentiometer_5"
+name_label = "X Pan"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 512
+display_float_digits = 1
+suffix_label = "%"
+
+# Knob 6: Y Pan
+[[parameter]]
+parameter_id = "rotary_potentiometer_6"
+name_label = "Y Pan"
+control_mode = "linear"
+display_min_value = 0
+display_max_value = 100
+initial_value = 512
+display_float_digits = 1
+suffix_label = "%"
+
+# Switch 7: Negative Space
+[[parameter]]
+parameter_id = "toggle_switch_7"
+name_label = "Neg Space"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 8: Animate
+[[parameter]]
+parameter_id = "toggle_switch_8"
+name_label = "Animate"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 9: Aspect Lock
+[[parameter]]
+parameter_id = "toggle_switch_9"
+name_label = "Sq Aspect"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 10: Variant bit 0 (combines with Switch 11 for 4 formulas)
+[[parameter]]
+parameter_id = "toggle_switch_10"
+name_label = "Variant A"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
+
+# Switch 11: Variant bit 1
+[[parameter]]
+parameter_id = "toggle_switch_11"
+name_label = "Variant B"
+value_labels = ["Off", "On"]
+initial_value_label = "Off"
